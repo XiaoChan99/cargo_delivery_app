@@ -1,0 +1,106 @@
+{
+  "project_info": {
+    "project_number": "497593435460",
+    "firebase_url": "https://gothong-congestion-management-default-rtdb.asia-southeast1.firebasedatabase.app",
+    "project_id": "gothong-congestion-management",
+    "storage_bucket": "gothong-congestion-management.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:497593435460:android:865840a142c61218850311",
+        "android_client_info": {
+          "package_name": "com.gothong.firedb"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAbwlf_83WPz202PTyCZmGCWMyU-YrK2UY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:497593435460:android:450b16a52367b257850311",
+        "android_client_info": {
+          "package_name": "com.gothon.congestionmanagement"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAbwlf_83WPz202PTyCZmGCWMyU-YrK2UY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:497593435460:android:bfce93965f859883850311",
+        "android_client_info": {
+          "package_name": "com.gothong.DefaultCompany"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAbwlf_83WPz202PTyCZmGCWMyU-YrK2UY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:497593435460:android:1995e6f170f8bfe9850311",
+        "android_client_info": {
+          "package_name": "com.gothong.congestionmanagement"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAbwlf_83WPz202PTyCZmGCWMyU-YrK2UY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:497593435460:android:eec4c28e83a95d25850311",
+        "android_client_info": {
+          "package_name": "com.gothong.firedb"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAbwlf_83WPz202PTyCZmGCWMyU-YrK2UY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

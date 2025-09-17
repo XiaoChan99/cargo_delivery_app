@@ -1,0 +1,49 @@
+name: Cargo_Delivery_App
+description: "A cargo delivery application"
+publish_to: 'Christian Abregana'
+
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+    
+  
+  # Firebase Core (must be first)
+  firebase_core: ^2.32.0
+  
+  # Firebase Services - use compatible versions
+  cloud_firestore: ^4.17.0
+  firebase_auth: ^4.9.0
+  firebase_storage: ^11.7.0
+  firebase_messaging: ^14.7.0
+  firebase_analytics: ^10.7.0
+  
+  # Image/File Handling
+  image_picker: ^1.0.4
+  file_picker: ^8.0.0
+  
+  # Web compatibility for file operations
+  universal_io: ^2.0.8
+  path: ^1.8.3
+  image_picker_web: ^3.0.1
+  # UI & Maps
+  mobile_scanner: ^3.5.6
+  flutter_map: ^6.1.0
+  latlong2: ^0.9.1
+  flutter_svg: ^2.0.10
+  
+  # Icons
+  cupertino_icons: ^1.0.8
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
+  
