@@ -94,7 +94,7 @@ class _LandingPageState extends State<LandingPage>
           children: [
             // Animated background elements
             ...List.generate(30, (index) => _buildFloatingParticle(index)),
-            
+
             // Grid overlay
             Opacity(
               opacity: 0.03,
@@ -105,63 +105,28 @@ class _LandingPageState extends State<LandingPage>
                 height: double.infinity,
               ),
             ),
-            
+
             // Glassmorphism elements
             Positioned(
               top: screenHeight * 0.1,
               right: -100,
               child: _buildGlassMorphismCircle(200, Colors.cyan),
             ),
-            
             Positioned(
               bottom: screenHeight * 0.15,
               left: -80,
               child: _buildGlassMorphismCircle(160, Colors.blue),
             ),
-            
             Positioned(
               top: screenHeight * 0.4,
               left: screenWidth * 0.2,
               child: _buildGlassMorphismCircle(120, Colors.teal),
             ),
-            
-            // Content
-            SafeArea(
-              minimum: EdgeInsets.all(isSmallScreen ? 16 : 24),
+
+            // Centered login container
+            Center(
               child: SingleChildScrollView(
-                child: Column(
-                  children: [
-                    const SizedBox(height: 20),
-                    
-                    // Header with logo and navigation
-                    _buildHeader(theme, isSmallScreen),
-                    
-                    SizedBox(height: screenHeight * 0.05),
-                    
-                    // Hero section
-                    _buildHeroSection(theme, screenWidth, isSmallScreen),
-                    
-                    const SizedBox(height: 80),
-                    
-                    // Features section
-                    _buildFeaturesSection(theme, screenWidth, isSmallScreen),
-                    
-                    const SizedBox(height: 80),
-                    
-                    // Stats section
-                    _buildStatsSection(theme, isSmallScreen),
-                    
-                    const SizedBox(height: 80),
-                    
-                    // CTA section
-                    _buildCTASection(theme, isSmallScreen),
-                    
-                    const SizedBox(height: 60),
-                    
-                    // Footer
-                    _buildFooter(theme),
-                  ],
-                ),
+                child: _buildCTASection(theme, isSmallScreen),
               ),
             ),
           ],
@@ -708,7 +673,7 @@ class _LandingPageState extends State<LandingPage>
           const SizedBox(height: 16),
           
           Text(
-            "Join leading ports worldwide using PortFlow to optimize their operations",
+            "Join leading ports worldwide using Port Congestion Delivery App to optimize their operations",
             textAlign: TextAlign.center,
             style: TextStyle(
               color: Colors.white.withOpacity(0.7),
@@ -820,7 +785,7 @@ class _LandingPageState extends State<LandingPage>
                       ),
                     ),
                     child: const Text(
-                      "Start Free Trial",
+                      "Login",
                       style: TextStyle(
                         fontWeight: FontWeight.w700,
                         fontSize: 16,
@@ -840,7 +805,7 @@ class _LandingPageState extends State<LandingPage>
             },
             child: RichText(
               text: TextSpan(
-                text: "New to PortFlow? ",
+                text: "New to Port Congestion Delivery App? ",
                 style: TextStyle(color: Colors.white.withOpacity(0.7)),
                 children: [
                   TextSpan(
@@ -868,7 +833,7 @@ class _LandingPageState extends State<LandingPage>
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
             Text(
-              "© 2025 PortFlow • Next-Generation Maritime Intelligence",
+              "© 2025 Port Congestion Management• Next-Generation Maritime Intelligence",
               style: theme.textTheme.bodySmall?.copyWith(
                 color: Colors.white.withOpacity(0.5),
                 fontSize: 12,
@@ -929,7 +894,7 @@ const String _ultraModernPortSvg = '''
       <stop offset="50%" stop-color="#00D4FF" />
       <stop offset="100%" stop-color="#FF6B6B" />
     </linearGradient>
-    // ...existing code...
+    <!-- ...existing code... -->
 
     <!-- Add filters for glowing effects -->
     <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
@@ -1017,4 +982,3 @@ const String _googleSvg = '''
     c0.001-0.001,0.002-0.001,0.003-0.002l6.19,5.238C36.971,39.205,44,34,44,24C44,22.659,43.862,21.35,43.611,20.083z"/>
 </svg>
 ''';
-   
