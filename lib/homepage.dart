@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -5,7 +6,9 @@ import 'schedulepage.dart';
 import 'livemap_page.dart';
 import 'settings_page.dart';
 import 'notifications_page.dart';
-import 'dart:convert'; 
+import 'container_details_page.dart';
+import 'dart:convert';
+import 'package:http/http.dart' as http; // <-- Add this import
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -25,12 +28,17 @@ class _HomePageState extends State<HomePage> {
   List<Map<String, dynamic>> _notifications = [];
   bool _isLoading = true;
   String? _errorMessage;
-  
-  // New state variables for Today's Summary
+
+  // Today's Summary
   int _deliveredToday = 0;
   int _pendingToday = 0;
   int _delayedToday = 0;
   Map<String, dynamic>? _currentDelivery;
+
+  // Assigned Deliveries (from Django API)
+  List<Map<String, dynamic>> _assignedDeliveries = [];
+  // Django API base URL - update this with your actual Django server URL
+  final String _djangoBaseUrl = 'http://127.0.0.1:8000/'; // <-- Set your Django server URL
 
   @override
   void initState() {
@@ -39,10 +47,16 @@ class _HomePageState extends State<HomePage> {
     if (_currentUser != null) {
       _loadData();
       _setupNotificationsListener();
+      _loadAssignedDeliveriesFromDjango(); // <-- Use Django API for assigned deliveries
     } else {
       _isLoading = false;
       _errorMessage = "User not authenticated";
     }
+  }
+
+  @override
+  void dispose() {
+    super.dispose();
   }
 
   Future<void> _loadData() async {
@@ -53,6 +67,7 @@ class _HomePageState extends State<HomePage> {
         _loadUpcomingTasks(),
         _loadTodaysSummary(),
         _loadCurrentDelivery(),
+        _loadAssignedDeliveriesFromDjango(), // <-- Use Django API method here
       ]);
     } catch (e) {
       setState(() {
@@ -62,6 +77,64 @@ class _HomePageState extends State<HomePage> {
       setState(() {
         _isLoading = false;
       });
+    }
+  }
+
+  // Helper to check if a delivery notification already exists
+  Future<bool> _hasDeliveryNotification(String deliveryId) async {
+    final query = await _firestore
+        .collection('notifications')
+        .where('userId', isEqualTo: _currentUser!.uid)
+        .where('type', isEqualTo: 'shipping')
+        .where('deliveryId', isEqualTo: deliveryId)
+        .limit(1)
+        .get();
+    return query.docs.isNotEmpty;
+  }
+
+  // Improved: Fetch assigned deliveries and create notification if new
+  Future<void> _loadAssignedDeliveriesFromDjango() async {
+    if (_currentUser == null) return;
+    try {
+      final response = await http.get(
+        Uri.parse('${_djangoBaseUrl}api/delivery-assignments/list/'),
+        headers: {'Content-Type': 'application/json'},
+      );
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        if (data['success'] == true) {
+          final newDeliveries = List<Map<String, dynamic>>.from(data['assignments'])
+              .where((delivery) =>
+                  delivery['assignedToId'] == _currentUser?.uid &&
+                  ['scheduled', 'pending', 'assigned'].contains(delivery['status']))
+              .toList();
+
+          // For each new delivery, add notification if not already present
+          for (var delivery in newDeliveries) {
+            final deliveryId = delivery['containerNo'] ?? delivery['delivery_id'] ?? '';
+            if (deliveryId.isNotEmpty && !(await _hasDeliveryNotification(deliveryId))) {
+              await _firestore.collection('notifications').add({
+                'userId': _currentUser!.uid,
+                'type': 'shipping',
+                'message': 'New delivery assigned: Container $deliveryId',
+                'timestamp': Timestamp.now(),
+                'read': false,
+                'deliveryId': deliveryId,
+              });
+            }
+          }
+
+          setState(() {
+            _assignedDeliveries = newDeliveries;
+          });
+        } else {
+          print('Error from Django API: ${data['error']}');
+        }
+      } else {
+        print('HTTP error: ${response.statusCode}');
+      }
+    } catch (e) {
+      print('Error loading deliveries from Django: $e');
     }
   }
 
@@ -82,7 +155,6 @@ class _HomePageState extends State<HomePage> {
               'id': doc.id,
             });
           }
-
           setState(() {
             _notifications = notifications;
             _notificationCount = notifications.where((n) => n['read'] == false).length;
@@ -95,12 +167,11 @@ class _HomePageState extends State<HomePage> {
   Future<void> _loadUserData() async {
     if (_currentUser != null) {
       try {
-        // Only look for couriers (remove shipper logic)
         DocumentSnapshot courierDoc = await _firestore
             .collection('Couriers')
             .doc(_currentUser!.uid)
             .get();
-        
+
         if (courierDoc.exists) {
           setState(() {
             _userData = courierDoc.data() as Map<String, dynamic>;
@@ -108,15 +179,10 @@ class _HomePageState extends State<HomePage> {
           });
           return;
         }
-        
-        // If user not found in couriers collection
-        print('User data not found in Firestore');
         setState(() {
           _errorMessage = "User profile not found";
         });
-        
       } catch (e) {
-        print('Error loading user data: $e');
         setState(() {
           _errorMessage = "Error loading user profile";
         });
@@ -148,7 +214,6 @@ class _HomePageState extends State<HomePage> {
           _notificationCount = notifications.where((n) => n['read'] == false).length;
         });
       } catch (e) {
-        print('Error loading notifications: $e');
         // Silently handle error - notifications are optional
       }
     }
@@ -159,8 +224,7 @@ class _HomePageState extends State<HomePage> {
       try {
         DateTime now = DateTime.now();
         DateTime startOfToday = DateTime(now.year, now.month, now.day);
-        
-        // Get all tasks and filter locally
+
         QuerySnapshot tasksSnapshot = await _firestore
             .collection('tasks')
             .where('userId', isEqualTo: _currentUser!.uid)
@@ -169,11 +233,9 @@ class _HomePageState extends State<HomePage> {
         List<Map<String, dynamic>> tasks = [];
         for (var doc in tasksSnapshot.docs) {
           var task = doc.data() as Map<String, dynamic>;
-          
-          // Check if task date is today or future
           if (task['scheduleDate'] != null) {
             DateTime scheduleDate = (task['scheduleDate'] as Timestamp).toDate();
-            if (scheduleDate.isAfter(startOfToday) || 
+            if (scheduleDate.isAfter(startOfToday) ||
                 scheduleDate.isAtSameMomentAs(startOfToday)) {
               tasks.add({
                 ...task,
@@ -183,27 +245,21 @@ class _HomePageState extends State<HomePage> {
           }
         }
 
-        // Sort by date and time
         tasks.sort((a, b) {
           DateTime dateA = (a['scheduleDate'] as Timestamp).toDate();
           DateTime dateB = (b['scheduleDate'] as Timestamp).toDate();
-          
-          // If same date, compare times
           if (dateA.isAtSameMomentAs(dateB)) {
             TimeOfDay timeA = _parseTimeFromString(a['scheduleTime']);
             TimeOfDay timeB = _parseTimeFromString(b['scheduleTime']);
             return timeA.hour * 60 + timeA.minute - (timeB.hour * 60 + timeB.minute);
           }
-          
           return dateA.compareTo(dateB);
         });
 
-        // Take only first 3 tasks
         setState(() {
           _upcomingTasks = tasks.take(3).toList();
         });
       } catch (e) {
-        print('Error loading tasks: $e');
         // Silently handle error - tasks are optional
       }
     }
@@ -215,7 +271,7 @@ class _HomePageState extends State<HomePage> {
         DateTime now = DateTime.now();
         DateTime startOfToday = DateTime(now.year, now.month, now.day);
         DateTime endOfToday = DateTime(now.year, now.month, now.day, 23, 59, 59);
-        
+
         QuerySnapshot tasksSnapshot = await _firestore
             .collection('tasks')
             .where('userId', isEqualTo: _currentUser!.uid)
@@ -226,11 +282,10 @@ class _HomePageState extends State<HomePage> {
         int delivered = 0;
         int pending = 0;
         int delayed = 0;
-        
+
         for (var doc in tasksSnapshot.docs) {
           var task = doc.data() as Map<String, dynamic>;
           String status = task['status']?.toString().toLowerCase() ?? 'pending';
-          
           if (status == 'delivered') {
             delivered++;
           } else if (status == 'pending') {
@@ -239,14 +294,13 @@ class _HomePageState extends State<HomePage> {
             delayed++;
           }
         }
-        
+
         setState(() {
           _deliveredToday = delivered;
           _pendingToday = pending;
           _delayedToday = delayed;
         });
       } catch (e) {
-        print('Error loading today\'s summary: $e');
         // Silently handle error - summary is optional
       }
     }
@@ -256,8 +310,7 @@ class _HomePageState extends State<HomePage> {
     if (_currentUser != null) {
       try {
         DateTime now = DateTime.now();
-        
-        // Get the first active delivery (status not delivered)
+
         QuerySnapshot tasksSnapshot = await _firestore
             .collection('tasks')
             .where('userId', isEqualTo: _currentUser!.uid)
@@ -268,12 +321,10 @@ class _HomePageState extends State<HomePage> {
 
         if (tasksSnapshot.docs.isNotEmpty) {
           var task = tasksSnapshot.docs.first.data() as Map<String, dynamic>;
-          
-          // Calculate distance (this would normally come from your mapping service)
           String origin = task['origin'] ?? 'Gothong Port';
           String destination = task['destination'] ?? 'Carcar';
           int distance = _calculateDistance(origin, destination);
-          
+
           setState(() {
             _currentDelivery = {
               ...task,
@@ -288,15 +339,12 @@ class _HomePageState extends State<HomePage> {
           });
         }
       } catch (e) {
-        print('Error loading current delivery: $e');
         // Silently handle error - current delivery is optional
       }
     }
   }
 
-  // Simple distance calculation (in a real app, you'd use a mapping API)
   int _calculateDistance(String origin, String destination) {
-    // This is a simplified mock calculation
     if (origin.contains('Gothong') && destination.contains('Carcar')) {
       return 100;
     } else if (origin.contains('Gothong') && destination.contains('Toledo')) {
@@ -304,7 +352,7 @@ class _HomePageState extends State<HomePage> {
     } else if (origin.contains('Gothong') && destination.contains('Naga')) {
       return 45;
     } else {
-      return 60; // Default distance
+      return 60;
     }
   }
 
@@ -323,14 +371,22 @@ class _HomePageState extends State<HomePage> {
 
   String _getDayAbbreviation(DateTime date) {
     switch (date.weekday) {
-      case 1: return 'Mon';
-      case 2: return 'Tue';
-      case 3: return 'Wed';
-      case 4: return 'Thu';
-      case 5: return 'Fri';
-      case 6: return 'Sat';
-      case 7: return 'Sun';
-      default: return '';
+      case 1:
+        return 'Mon';
+      case 2:
+        return 'Tue';
+      case 3:
+        return 'Wed';
+      case 4:
+        return 'Thu';
+      case 5:
+        return 'Fri';
+      case 6:
+        return 'Sat';
+      case 7:
+        return 'Sun';
+      default:
+        return '';
     }
   }
 
@@ -393,11 +449,9 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  // Helper method to get full name from user data
   String _getFullName() {
     String firstName = _userData['first_name'] ?? '';
     String lastName = _userData['last_name'] ?? '';
-    
     if (firstName.isNotEmpty && lastName.isNotEmpty) {
       return '$firstName $lastName';
     } else if (firstName.isNotEmpty) {
@@ -409,33 +463,26 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  // Helper method to get driver ID from user data
   String _getDriverId() {
     return _userData['driverId'] ?? _userData['license_number'] ?? 'N/A';
   }
 
-  // Helper method to display role-specific text
   String _getRoleText() {
     return "License No.";
   }
 
-  // Helper method to display profile image
   Widget _getProfileWidget() {
     String? profileImageBase64 = _userData['profile_image_base64'];
-    
     if (profileImageBase64 != null && profileImageBase64.isNotEmpty) {
-      // Check if it's a data URL format
       if (profileImageBase64.contains('base64,')) {
         profileImageBase64 = profileImageBase64.split('base64,').last;
       }
-      
       try {
         return CircleAvatar(
           radius: 20,
           backgroundImage: MemoryImage(base64Decode(profileImageBase64)),
         );
       } catch (e) {
-        print('Error decoding profile image: $e');
         return _buildDefaultProfile();
       }
     } else {
@@ -453,6 +500,40 @@ class _HomePageState extends State<HomePage> {
         size: 20,
       ),
     );
+  }
+
+  String _getCargoStatusText(String status) {
+    switch (status.toLowerCase()) {
+      case 'scheduled':
+        return 'Scheduled';
+      case 'pending':
+        return 'Pending';
+      case 'assigned':
+        return 'Assigned';
+      case 'in_transit':
+        return 'In Transit';
+      case 'delivered':
+        return 'Delivered';
+      default:
+        return status;
+    }
+  }
+
+  Color _getCargoStatusColor(String status) {
+    switch (status.toLowerCase()) {
+      case 'scheduled':
+        return const Color(0xFF3B82F6);
+      case 'pending':
+        return const Color(0xFFF59E0B);
+      case 'assigned':
+        return const Color(0xFF8B5CF6);
+      case 'in_transit':
+        return const Color(0xFF6366F1);
+      case 'delivered':
+        return const Color(0xFF10B981);
+      default:
+        return const Color(0xFF64748B);
+    }
   }
 
   @override
@@ -492,7 +573,7 @@ class _HomePageState extends State<HomePage> {
       body: SingleChildScrollView(
         child: Column(
           children: [
-            // Updated Header to match SchedulePage
+            // Header
             Container(
               width: double.infinity,
               padding: const EdgeInsets.fromLTRB(16, 30, 16, 20),
@@ -611,15 +692,12 @@ class _HomePageState extends State<HomePage> {
                           ],
                         );
                       }
-                      
                       int delivered = 0;
                       int pending = 0;
                       int delayed = 0;
-                      
                       for (var doc in snapshot.data!.docs) {
                         var task = doc.data() as Map<String, dynamic>;
                         String status = task['status']?.toString().toLowerCase() ?? 'pending';
-                        
                         if (status == 'delivered') {
                           delivered++;
                         } else if (status == 'pending') {
@@ -628,7 +706,6 @@ class _HomePageState extends State<HomePage> {
                           delayed++;
                         }
                       }
-                      
                       return Row(
                         children: [
                           Expanded(child: _buildStatusCard(delivered.toString(), "Delivered", const Color(0xFF10B981))),
@@ -643,9 +720,77 @@ class _HomePageState extends State<HomePage> {
                 ],
               ),
             ),
-            
+
             const SizedBox(height: 16),
-            
+
+            // Assigned Deliveries from Django
+            if (_assignedDeliveries.isNotEmpty)
+              Container(
+                margin: const EdgeInsets.symmetric(horizontal: 16),
+                padding: const EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [Colors.white, Color(0xFFFAFBFF)],
+                  ),
+                  borderRadius: BorderRadius.circular(16),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.08),
+                      blurRadius: 20,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          "New Cargo Deliveries",
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w700,
+                            color: Color(0xFF1E293B),
+                          ),
+                        ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF3B82F6).withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Text(
+                            _assignedDeliveries.length.toString(),
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: Color(0xFF3B82F6),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    ..._assignedDeliveries.map((delivery) {
+                      return Column(
+                        children: [
+                          _buildCargoDeliveryCard(delivery),
+                          if (_assignedDeliveries.indexOf(delivery) < _assignedDeliveries.length - 1)
+                            const SizedBox(height: 12),
+                        ],
+                      );
+                    }),
+                  ],
+                ),
+              ),
+
+            const SizedBox(height: 16),
+
+            // Upcoming Schedule
             Container(
               margin: const EdgeInsets.symmetric(horizontal: 16),
               padding: const EdgeInsets.all(20),
@@ -710,7 +855,6 @@ class _HomePageState extends State<HomePage> {
                     ..._upcomingTasks.map((task) {
                       DateTime scheduleDate = (task['scheduleDate'] as Timestamp).toDate();
                       TimeOfDay scheduleTime = _parseTimeFromString(task['scheduleTime']);
-                      
                       return Column(
                         children: [
                           _buildScheduleItem(
@@ -727,9 +871,10 @@ class _HomePageState extends State<HomePage> {
                 ],
               ),
             ),
-            
+
             const SizedBox(height: 16),
-            
+
+            // Today's Summary
             Container(
               margin: const EdgeInsets.symmetric(horizontal: 16),
               padding: const EdgeInsets.all(20),
@@ -850,9 +995,10 @@ class _HomePageState extends State<HomePage> {
                 ],
               ),
             ),
-            
+
             const SizedBox(height: 16),
-            
+
+            // Notifications
             Container(
               margin: const EdgeInsets.symmetric(horizontal: 16),
               padding: const EdgeInsets.all(20),
@@ -911,7 +1057,7 @@ class _HomePageState extends State<HomePage> {
                     ],
                   ),
                   const SizedBox(height: 16),
-                  
+
                   if (_notifications.isEmpty)
                     const Padding(
                       padding: EdgeInsets.symmetric(vertical: 8.0),
@@ -933,7 +1079,7 @@ class _HomePageState extends State<HomePage> {
                             _formatTimeAgo(notification['timestamp'] ?? Timestamp.now()),
                             isRead: notification['read'] ?? false,
                           ),
-                          if (_notifications.indexOf(notification) < _notifications.length - 1 && 
+                          if (_notifications.indexOf(notification) < _notifications.length - 1 &&
                               _notifications.indexOf(notification) < 1)
                             const SizedBox(height: 12),
                         ],
@@ -942,12 +1088,123 @@ class _HomePageState extends State<HomePage> {
                 ],
               ),
             ),
-            
+
             const SizedBox(height: 100),
           ],
         ),
       ),
       bottomNavigationBar: _buildBottomNavigation(context, 0),
+    );
+  }
+
+  // --- Helper for Django delivery card ---
+  Widget _buildCargoDeliveryCard(Map<String, dynamic> delivery) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Expanded(
+                child: Text(
+                  "Container: ${delivery['containerNo'] ?? delivery['delivery_id'] ?? 'N/A'}",
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF1E293B),
+                  ),
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: _getCargoStatusColor(delivery['status'] ?? 'pending').withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  _getCargoStatusText(delivery['status'] ?? 'pending'),
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: _getCargoStatusColor(delivery['status'] ?? 'pending'),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              const Icon(Icons.location_on_outlined, size: 16, color: Color(0xFF64748B)),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Text(
+                  "${delivery['pickupLocation'] ?? delivery['pickup_location'] ?? 'N/A'} → ${delivery['destination'] ?? 'N/A'}",
+                  style: const TextStyle(
+                    fontSize: 14,
+                    color: Color(0xFF64748B),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              const Icon(Icons.access_time_outlined, size: 16, color: Color(0xFF64748B)),
+              const SizedBox(width: 4),
+              Text(
+                "Assigned: ${delivery['createdAt'] != null ? _formatTimeAgo(Timestamp.fromDate(DateTime.parse(delivery['createdAt']))) : (delivery['confirmed_at'] != null ? _formatTimeAgo(Timestamp.fromDate(DateTime.parse(delivery['confirmed_at']))) : 'Recently')}",
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: Color(0xFF64748B),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => ContainerDetailsPage(
+                      containerNo: delivery['containerNo'] ?? delivery['delivery_id'] ?? '',
+                      time: delivery['createdAt'] ?? delivery['confirmed_at'] ?? '',
+                      pickup: delivery['pickupLocation'] ?? delivery['pickup_location'] ?? '',
+                      destination: delivery['destination'] ?? '',
+                      status: delivery['status'] ?? '',
+                      deliveryDocId: delivery['firestore_id'] ?? delivery['id'],
+                    ),
+                  ),
+                );
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF3B82F6),
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+              ),
+              child: const Text(
+                "View Details",
+                style: TextStyle(
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -1005,40 +1262,42 @@ class _HomePageState extends State<HomePage> {
           ),
         ),
         const SizedBox(width: 12),
+        Container(
+          width: 50,
+          padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+          decoration: BoxDecoration(
+            color: const Color(0xFFF8FAFC),
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: const Color(0xFFE2E8F0)),
+          ),
+          child: Text(
+            day,
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: Color(0xFF64748B),
+            ),
+            textAlign: TextAlign.center,
+          ),
+        ),
+        const SizedBox(width: 12),
+        Text(
+          time,
+          style: const TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+            color: Color(0xFF1E293B),
+          ),
+        ),
+        const SizedBox(width: 12),
         Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    day,
-                    style: const TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
-                      color: Color(0xFF1E293B),
-                    ),
-                  ),
-                  Text(
-                    time,
-                    style: const TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
-                      color: Color(0xFF1E293B),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 4),
-              Text(
-                container,
-                style: const TextStyle(
-                  fontSize: 12,
-                  color: Color(0xFF64748B),
-                ),
-              ),
-            ],
+          child: Text(
+            container,
+            style: const TextStyle(
+              fontSize: 14,
+              color: Color(0xFF64748B),
+            ),
+            overflow: TextOverflow.ellipsis,
           ),
         ),
       ],

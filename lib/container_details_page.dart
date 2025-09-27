@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:Cargo_Delivery_App/livemap_page.dart';
+import 'package:cloud_firestore/cloud_firestore.dart'; // Add this import for Firestore
+import 'livemap_page.dart';
 
 class ContainerDetailsPage extends StatelessWidget {
   final String containerNo;
@@ -7,14 +8,16 @@ class ContainerDetailsPage extends StatelessWidget {
   final String pickup;
   final String destination;
   final String status;
+  final String? deliveryDocId;
 
-  const ContainerDetailsPage({
+ const ContainerDetailsPage({
     super.key,
     required this.containerNo,
     required this.time,
     required this.pickup,
     required this.destination,
     required this.status,
+    this.deliveryDocId,
   });
 
   @override
@@ -319,7 +322,6 @@ class ContainerDetailsPage extends StatelessWidget {
                 margin: const EdgeInsets.symmetric(horizontal: 16),
                 child: Column(
                   children: [
-                    // First row of buttons
                     LayoutBuilder(
                       builder: (context, constraints) {
                         final isSmallScreen = constraints.maxWidth < 360;
@@ -372,10 +374,7 @@ class ContainerDetailsPage extends StatelessWidget {
                               );
                       },
                     ),
-                    
                     const SizedBox(height: 8),
-                    
-                    // Second row of buttons
                     LayoutBuilder(
                       builder: (context, constraints) {
                         final isSmallScreen = constraints.maxWidth < 360;
@@ -394,14 +393,10 @@ class ContainerDetailsPage extends StatelessWidget {
                                   ),
                                   const SizedBox(height: 8),
                                   _buildActionButton(
-                                    text: "Confirm Start",
+                                    text: "Confirm Delivery",
                                     isPrimary: true,
                                     color: const Color(0xFF10B981),
-                                    onPressed: () => _showConfirmationModal(
-                                      context,
-                                      "Confirm Start",
-                                      "Are you ready to start this delivery task?",
-                                    ),
+                                    onPressed: () => _showDeliveryConfirmation(context),
                                   ),
                                 ],
                               )
@@ -422,14 +417,10 @@ class ContainerDetailsPage extends StatelessWidget {
                                   const SizedBox(width: 8),
                                   Expanded(
                                     child: _buildActionButton(
-                                      text: "Confirm Start",
+                                      text: "Confirm Delivery",
                                       isPrimary: true,
                                       color: const Color(0xFF10B981),
-                                      onPressed: () => _showConfirmationModal(
-                                        context,
-                                        "Confirm Start",
-                                        "Are you ready to start this delivery task?",
-                                      ),
+                                      onPressed: () => _showDeliveryConfirmation(context),
                                     ),
                                   ),
                                 ],
@@ -448,6 +439,51 @@ class ContainerDetailsPage extends StatelessWidget {
       bottomNavigationBar: _buildBottomNavigation(context),
     );
   }
+
+  void _showDeliveryConfirmation(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text("Confirm Delivery"),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Container: $containerNo'),
+              const SizedBox(height: 8),
+              const Text('Are you sure you want to mark this delivery as delivered?'),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text("Cancel"),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                // Update Firestore status to delivered
+                if (deliveryDocId != null) {
+                  await FirebaseFirestore.instance
+                      .collection('cargo_delivery')
+                      .doc(deliveryDocId)
+                      .update({'status': 'delivered'});
+                }
+                Navigator.of(context).pop();
+                _showSuccessModal(context, 'Delivery marked as completed!');
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF10B981),
+              ),
+              child: const Text("Confirm"),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+
 
   Widget _buildCard({required Widget child}) {
     return Container(

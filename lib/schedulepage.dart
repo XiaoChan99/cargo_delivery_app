@@ -553,13 +553,14 @@ class _SchedulePageState extends State<SchedulePage> {
                         destination: destination,
                         status: status,
                       );
-                    } else if (status.toLowerCase() == "scheduled") {
+                    } else if (status.toLowerCase() == "scheduled" || status.toLowerCase() == "pending") {
                       destinationPage = ContainerDetailsPage(
                         containerNo: container,
                         time: time,
                         pickup: pickup,
                         destination: destination,
                         status: status,
+                        // Pass Firestore doc id if available for deliveryDocId, else null
                       );
                     } else if (status.toLowerCase() == "delayed") {
                       destinationPage = StatusUpdatePage(
@@ -618,7 +619,6 @@ class _SchedulePageState extends State<SchedulePage> {
       ),
     );
   }
-
   Widget _buildHistoryEntry(String date, String container, String route, String status, Color statusColor) {
     return Container(
       padding: const EdgeInsets.all(16),
