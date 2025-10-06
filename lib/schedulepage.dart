@@ -17,36 +17,170 @@ class SchedulePage extends StatefulWidget {
   State<SchedulePage> createState() => _SchedulePageState();
 }
 
-class _SchedulePageState extends State<SchedulePage> {
+class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseAuth _auth = FirebaseAuth.instance;
   Map<String, dynamic>? _userData;
   Uint8List? _cachedAvatarImage;
-  String _licenseNumber = ''; // This will store the license number
+  String _licenseNumber = '';
   bool _isLoading = true;
 
-  // Precompute today's date range for Firestore query
-  late DateTime _startOfDay;
-  late DateTime _endOfDay;
+  // Cargo Lists
+  List<Map<String, dynamic>> _availableCargos = [];
+  List<Map<String, dynamic>> _inProgressDeliveries = [];
 
   @override
   void initState() {
     super.initState();
-    _initDateRange();
     _loadUserData();
+    _loadCargoData();
+    _setupRealTimeListeners();
   }
 
-  void _initDateRange() {
-    final now = DateTime.now();
-    _startOfDay = DateTime(now.year, now.month, now.day);
-    _endOfDay = DateTime(now.year, now.month, now.day, 23, 59, 59);
+  void _setupRealTimeListeners() {
+    setupCargoListener(_loadAvailableCargos);
+    if (_auth.currentUser != null) {
+      setupDeliveryListener(_auth.currentUser!.uid, _loadInProgressDeliveries);
+    }
+  }
+
+  Future<void> _loadCargoData() async {
+    try {
+      await Future.wait([
+        _loadAvailableCargos(),
+        _loadInProgressDeliveries(),
+      ]);
+    } catch (e) {
+      print('Error loading cargo data: $e');
+    } finally {
+      setState(() {
+        _isLoading = false;
+      });
+    }
+  }
+
+  Future<void> _loadAvailableCargos() async {
+    try {
+      // Get all cargo documents
+      QuerySnapshot cargoSnapshot = await _firestore
+          .collection('Cargo')
+          .orderBy('created_at', descending: true)
+          .get();
+
+      // Get all cargo IDs that have delivery records
+      QuerySnapshot deliverySnapshot = await _firestore
+          .collection('CargoDelivery')
+          .get();
+
+      Set<String> assignedCargoIds = {};
+      for (var doc in deliverySnapshot.docs) {
+        var deliveryData = doc.data() as Map<String, dynamic>;
+        if (deliveryData['cargo_id'] != null) {
+          assignedCargoIds.add(deliveryData['cargo_id'].toString());
+        }
+      }
+
+      List<Map<String, dynamic>> availableCargos = [];
+      for (var doc in cargoSnapshot.docs) {
+        var cargoData = doc.data() as Map<String, dynamic>;
+        
+        // Only include cargos that are not assigned to any delivery
+        if (!assignedCargoIds.contains(doc.id)) {
+          Map<String, dynamic> combinedData = {
+            'cargo_id': doc.id,
+            'containerNo': 'CONT-${cargoData['item_number']?.toString() ?? 'N/A'}',
+            'status': cargoData['status']?.toString() ?? 'pending',
+            'pickupLocation': cargoData['origin']?.toString() ?? 'Port Terminal',
+            'destination': cargoData['destination']?.toString() ?? 'Delivery Point',
+            'created_at': cargoData['created_at'],
+            'description': cargoData['description']?.toString() ?? 'N/A',
+            'weight': cargoData['weight'] ?? 0.0,
+            'value': cargoData['value'] ?? 0.0,
+            'hs_code': cargoData['hs_code']?.toString() ?? 'N/A',
+            'quantity': cargoData['quantity'] ?? 0,
+            'item_number': cargoData['item_number'] ?? 0,
+            'additional_info': cargoData['additional_info']?.toString() ?? '',
+            'submanifest_id': cargoData['submanifest_id']?.toString() ?? '',
+          };
+          availableCargos.add(combinedData);
+        }
+      }
+
+      setState(() {
+        _availableCargos = availableCargos;
+      });
+    } catch (e) {
+      print('Error loading available cargos: $e');
+    }
+  }
+
+  Future<void> _loadInProgressDeliveries() async {
+    try {
+      final user = _auth.currentUser;
+      if (user == null) return;
+
+      QuerySnapshot deliverySnapshot = await _firestore
+          .collection('CargoDelivery')
+          .where('courier_id', isEqualTo: user.uid)
+          .get();
+
+      List<Map<String, dynamic>> inProgressDeliveries = [];
+      
+      for (var doc in deliverySnapshot.docs) {
+        var deliveryData = doc.data() as Map<String, dynamic>;
+        String status = deliveryData['status']?.toString().toLowerCase() ?? '';
+        
+        // Only include in-progress, in_transit, or assigned statuses
+        if (status == 'in-progress' || status == 'in_transit' || status == 'assigned' || status == 'delayed') {
+          // Get cargo details using cargo_id foreign key
+          try {
+            DocumentSnapshot cargoDoc = await _firestore
+                .collection('Cargo')
+                .doc(deliveryData['cargo_id'].toString())
+                .get();
+
+            if (cargoDoc.exists) {
+              var cargoData = cargoDoc.data() as Map<String, dynamic>;
+              
+              Map<String, dynamic> combinedData = {
+                'delivery_id': doc.id,
+                'cargo_id': deliveryData['cargo_id'],
+                'containerNo': 'CONT-${cargoData['item_number'] ?? 'N/A'}',
+                'status': deliveryData['status'] ?? 'in-progress',
+                'pickupLocation': cargoData['origin'] ?? 'Port Terminal',
+                'destination': cargoData['destination'] ?? 'Delivery Point',
+                'confirmed_at': deliveryData['confirmed_at'],
+                'courier_id': deliveryData['courier_id'],
+                'description': cargoData['description'] ?? 'N/A',
+                'weight': cargoData['weight'] ?? 0.0,
+                'value': cargoData['value'] ?? 0.0,
+                'hs_code': cargoData['hs_code'] ?? 'N/A',
+                'quantity': cargoData['quantity'] ?? 0,
+                'item_number': cargoData['item_number'] ?? 0,
+                'proof_image': deliveryData['proof_image'],
+                'confirmed_by': deliveryData['confirmed_by'],
+                'remarks': deliveryData['remarks'],
+              };
+              inProgressDeliveries.add(combinedData);
+            }
+          } catch (e) {
+            print('Error loading cargo details for delivery: $e');
+          }
+        }
+      }
+
+      setState(() {
+        _inProgressDeliveries = inProgressDeliveries;
+      });
+    } catch (e) {
+      print('Error loading in-progress deliveries: $e');
+    }
   }
 
   Future<void> _loadUserData() async {
     try {
       final user = _auth.currentUser;
       if (user != null) {
-        // Only check if user is a courier (remove shipper check)
         final courierDoc = await _firestore.collection('Couriers').doc(user.uid).get();
         
         if (courierDoc.exists) {
@@ -54,16 +188,9 @@ class _SchedulePageState extends State<SchedulePage> {
           await _processUserData(data, 'courier');
           return;
         }
-        
-        // If user not found in couriers collection
-        print('User not found in Couriers collection');
       }
     } catch (e) {
       print('Error loading user data: $e');
-    } finally {
-      setState(() {
-        _isLoading = false;
-      });
     }
   }
 
@@ -73,18 +200,15 @@ class _SchedulePageState extends State<SchedulePage> {
     if (data['profile_image_base64'] != null && data['profile_image_base64'].toString().isNotEmpty) {
       try {
         decodedImage = await _decodeImage(data['profile_image_base64']);
-        print('Profile image decoded successfully');
       } catch (e) {
         print('Failed to decode profile image: $e');
       }
-    } else {
-      print('No profile image data found or profile image is empty');
     }
 
     setState(() {
       _userData = data;
       _cachedAvatarImage = decodedImage;
-      _licenseNumber = data['license_number'] ?? 'N/A'; // Get license number instead of role
+      _licenseNumber = data['license_number'] ?? 'N/A';
     });
   }
 
@@ -93,13 +217,20 @@ class _SchedulePageState extends State<SchedulePage> {
       case 'scheduled':
         return const Color(0xFF10B981);
       case 'in progress':
+      case 'in-progress':
+      case 'in_transit':
         return const Color(0xFFF59E0B);
       case 'delayed':
         return const Color(0xFFEF4444);
       case 'delivered':
+      case 'confirmed':
         return const Color(0xFF10B981);
       case 'pending':
         return const Color(0xFF64748B);
+      case 'assigned':
+        return const Color(0xFF3B82F6);
+      case 'cancelled':
+        return const Color(0xFFEF4444);
       default:
         return const Color(0xFF64748B);
     }
@@ -114,21 +245,12 @@ class _SchedulePageState extends State<SchedulePage> {
 
   String _formatDate(Timestamp timestamp) {
     final date = timestamp.toDate();
-    final months = [
-      'January', 'February', 'March', 'April', 'May', 'June',
-      'July', 'August', 'September', 'October', 'November', 'December'
-    ];
-    final weekdays = [
-      'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'
-    ];
-    return '${weekdays[date.weekday - 1]} ${months[date.month - 1]} ${date.day}, ${date.year}';
+    return '${date.day}/${date.month}/${date.year} ${_formatTime(timestamp)}';
   }
 
   Future<Uint8List> _decodeImage(String imageData) async {
     try {
-      // Handle different image data formats
       if (imageData.startsWith('data:image')) {
-        // Data URI format: data:image/png;base64,...
         final commaIndex = imageData.indexOf(',');
         if (commaIndex != -1) {
           final base64Data = imageData.substring(commaIndex + 1);
@@ -136,7 +258,6 @@ class _SchedulePageState extends State<SchedulePage> {
         }
       }
       
-      // Assume it's plain base64
       return base64Decode(imageData);
     } catch (e) {
       print('Error decoding image: $e');
@@ -144,14 +265,50 @@ class _SchedulePageState extends State<SchedulePage> {
     }
   }
 
+  void _handleCargoTap(Map<String, dynamic> cargoData) {
+    final status = cargoData['status']?.toString().toLowerCase() ?? 'pending';
+    
+    if (status == 'in-progress' || status == 'in_transit') {
+      // Navigate to live location for in-progress deliveries
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => LiveLocationPage(
+            cargoData: cargoData,
+          ),
+        ),
+      );
+    } else if (status == 'delayed') {
+      // Navigate to status update for delayed deliveries
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => StatusUpdatePage(
+            cargoData: cargoData,
+          ),
+        ),
+      );
+    } else {
+      // Navigate to container details for available/pending deliveries
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => ContainerDetailsPage(
+            containerData: cargoData,
+            isAvailable: true,
+          ),
+        ),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    // Use placeholders while loading
     final firstName = _userData?['first_name'] ?? 'First Name';
     final lastName = _userData?['last_name'] ?? 'Last Name';
     final fullName = _userData != null ? '$firstName $lastName' : 'Loading User...';
     final hasAvatarImage = _cachedAvatarImage != null && _cachedAvatarImage!.isNotEmpty;
-    final licenseNumber = _licenseNumber.isNotEmpty ? _licenseNumber : 'Loading license...'; // Display license number
+    final licenseNumber = _licenseNumber.isNotEmpty ? _licenseNumber : 'Loading license...';
 
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
@@ -160,7 +317,7 @@ class _SchedulePageState extends State<SchedulePage> {
           : SingleChildScrollView(
               child: Column(
                 children: [
-                  // Header with user info
+                  // Header
                   Container(
                     width: double.infinity,
                     padding: const EdgeInsets.fromLTRB(16, 30, 16, 20),
@@ -182,7 +339,6 @@ class _SchedulePageState extends State<SchedulePage> {
                           children: [
                             Row(
                               children: [
-                                // Avatar with profile picture from database
                                 hasAvatarImage
                                     ? CircleAvatar(
                                         radius: 20,
@@ -203,7 +359,7 @@ class _SchedulePageState extends State<SchedulePage> {
                                       style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: Colors.white),
                                     ),
                                     Text(
-                                      "License: $licenseNumber", // Display license number instead of role
+                                      "License No: $licenseNumber",
                                       style: const TextStyle(fontSize: 12, color: Colors.white70),
                                     ),
                                   ],
@@ -223,146 +379,27 @@ class _SchedulePageState extends State<SchedulePage> {
 
                   const SizedBox(height: 16),
 
-                  // Today's Schedule Section
-                  StreamBuilder<QuerySnapshot>(
-                    stream: _firestore
-                        .collection('schedules')
-                        .where('driverId', isEqualTo: _auth.currentUser?.uid)
-                        .where('date', isGreaterThanOrEqualTo: Timestamp.fromDate(_startOfDay))
-                        .where('date', isLessThanOrEqualTo: Timestamp.fromDate(_endOfDay))
-                        .orderBy('date')
-                        .snapshots(),
-                    builder: (context, snapshot) {
-                      if (snapshot.connectionState == ConnectionState.waiting) {
-                        return _buildLoadingScheduleCards(2); // Optimistic UI
-                      }
-
-                      if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-                        return _buildNoSchedule();
-                      }
-
-                      final schedules = snapshot.data!.docs;
-                      final firstSchedule = schedules.first.data() as Map<String, dynamic>;
-                      final scheduleDate = firstSchedule['date'] as Timestamp;
-
-                      return Container(
-                        margin: const EdgeInsets.symmetric(horizontal: 16),
-                        padding: const EdgeInsets.all(20),
-                        decoration: BoxDecoration(
-                          gradient: const LinearGradient(colors: [Colors.white, Color(0xFFFAFBFF)]),
-                          borderRadius: BorderRadius.circular(16),
-                          boxShadow: [
-                            BoxShadow(color: Colors.black.withOpacity(0.08), blurRadius: 20, offset: const Offset(0, 4)),
-                          ],
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              _formatDate(scheduleDate),
-                              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: Color(0xFF1E293B)),
-                            ),
-                            const SizedBox(height: 20),
-                            ...schedules.map((doc) {
-                              final schedule = doc.data() as Map<String, dynamic>;
-                              return Column(
-                                children: [
-                                  _buildScheduleEntry(
-                                    context,
-                                    _formatTime(schedule['date'] as Timestamp),
-                                    schedule['containerNo'] ?? 'N/A',
-                                    schedule['pickupLocation'] ?? 'N/A',
-                                    schedule['destination'] ?? 'N/A',
-                                    schedule['status'] ?? 'pending',
-                                    _getStatusColor(schedule['status'] ?? 'pending'),
-                                    doc.id,
-                                  ),
-                                  const SizedBox(height: 16),
-                                ],
-                              );
-                            }),
-                          ],
-                        ),
-                      );
-                    },
-                  ),
+                  // Available Cargos Section
+                  if (_availableCargos.isNotEmpty)
+                    _buildCargoSection(
+                      "Available Cargos",
+                      _availableCargos,
+                      true,
+                    ),
 
                   const SizedBox(height: 16),
 
-                  // Delivery History Section
-                  Container(
-                    margin: const EdgeInsets.symmetric(horizontal: 16),
-                    padding: const EdgeInsets.all(20),
-                    decoration: BoxDecoration(
-                      gradient: const LinearGradient(colors: [Colors.white, Color(0xFFFAFBFF)]),
-                      borderRadius: BorderRadius.circular(16),
-                      boxShadow: [
-                        BoxShadow(color: Colors.black.withOpacity(0.08), blurRadius: 20, offset: const Offset(0, 4)),
-                      ],
+                  // In Progress Deliveries Section
+                  if (_inProgressDeliveries.isNotEmpty)
+                    _buildCargoSection(
+                      "Your Active Deliveries",
+                      _inProgressDeliveries,
+                      false,
                     ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            const Text(
-                              "Delivery History",
-                              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: Color(0xFF1E293B)),
-                            ),
-                            TextButton(
-                              onPressed: () {},
-                              child: const Text(
-                                "View All",
-                                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Color(0xFF3B82F6)),
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 16),
-                        StreamBuilder<QuerySnapshot>(
-                          stream: _firestore
-                              .collection('delivery_history')
-                              .where('driverId', isEqualTo: _auth.currentUser?.uid)
-                              .orderBy('date', descending: true)
-                              .limit(3)
-                              .snapshots(),
-                          builder: (context, snapshot) {
-                            if (snapshot.connectionState == ConnectionState.waiting) {
-                              return _buildHistorySkeletons(2);
-                            }
 
-                            if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-                              return const Text(
-                                'No delivery history',
-                                style: TextStyle(color: Color(0xFF64748B)),
-                              );
-                            }
-
-                            final history = snapshot.data!.docs;
-
-                            return Column(
-                              children: history.map((doc) {
-                                final delivery = doc.data() as Map<String, dynamic>;
-                                return Column(
-                                  children: [
-                                    _buildHistoryEntry(
-                                      _formatDate(delivery['date'] as Timestamp),
-                                      delivery['containerNo'] ?? 'N/A',
-                                      '${delivery['pickupLocation']} → ${delivery['destination']}',
-                                      delivery['status'] ?? 'delivered',
-                                      _getStatusColor(delivery['status'] ?? 'delivered'),
-                                    ),
-                                    if (history.last != doc) const SizedBox(height: 12),
-                                  ],
-                                );
-                              }).toList(),
-                            );
-                          },
-                        ),
-                      ],
-                    ),
-                  ),
+                  // Empty State
+                  if (_availableCargos.isEmpty && _inProgressDeliveries.isEmpty)
+                    _buildNoCargo(),
 
                   const SizedBox(height: 100),
                 ],
@@ -372,9 +409,7 @@ class _SchedulePageState extends State<SchedulePage> {
     );
   }
 
-  // SKELETON UI HELPERS
-
-  Widget _buildLoadingScheduleCards(int count) {
+  Widget _buildCargoSection(String title, List<Map<String, dynamic>> cargos, bool isAvailable) {
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 16),
       padding: const EdgeInsets.all(20),
@@ -384,21 +419,6 @@ class _SchedulePageState extends State<SchedulePage> {
         boxShadow: [
           BoxShadow(color: Colors.black.withOpacity(0.08), blurRadius: 20, offset: const Offset(0, 4)),
         ],
-      ),
-      child: Column(
-        children: List.generate(count, (index) => _buildSkeletonScheduleCard()),
-      ),
-    );
-  }
-
-  Widget _buildSkeletonScheduleCard() {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 16),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: const Color(0xFFF8FAFC),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFFE2E8F0)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -406,89 +426,58 @@ class _SchedulePageState extends State<SchedulePage> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Container(height: 16, width: 60, color: Colors.grey[300]),
-              Container(height: 16, width: 80, color: Colors.grey[300]),
+              Text(
+                title,
+                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: Color(0xFF1E293B)),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF3B82F6).withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  cargos.length.toString(),
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF3B82F6),
+                  ),
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 8),
-          Container(height: 16, width: 100, color: Colors.grey[300]),
-          const SizedBox(height: 4),
-          Container(height: 12, width: 120, color: Colors.grey[300]),
-          Container(height: 12, width: 100, color: Colors.grey[300]),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: Container(height: 36, color: Colors.grey[300]),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Container(height: 36, color: Colors.grey[300]),
-              ),
-            ],
+          Text(
+            isAvailable ? "Cargos available for delivery" : "Deliveries in progress",
+            style: const TextStyle(fontSize: 14, color: Color(0xFF64748B)),
           ),
+          const SizedBox(height: 20),
+          ...cargos.map((cargo) {
+            return Column(
+              children: [
+                _buildCargoCard(cargo, isAvailable),
+                const SizedBox(height: 16),
+              ],
+            );
+          }).toList(),
         ],
       ),
     );
   }
 
-  Widget _buildHistorySkeletons(int count) {
-    return Column(
-      children: List.generate(count, (index) {
-        return Column(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: const Color(0xFFF8FAFC),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: const Color(0xFFE2E8F0)),
-              ),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Container(height: 12, width: 80, color: Colors.grey[300]),
-                        const SizedBox(height: 4),
-                        Container(height: 14, width: 100, color: Colors.grey[300]),
-                        const SizedBox(height: 2),
-                        Container(height: 12, width: 140, color: Colors.grey[300]),
-                      ],
-                    ),
-                  ),
-                  Container(height: 16, width: 70, color: Colors.grey[300]),
-                ],
-              ),
-            ),
-            if (index < count - 1) const SizedBox(height: 12),
-          ],
-        );
-      }),
-    );
-  }
+  Widget _buildCargoCard(Map<String, dynamic> cargo, bool isAvailable) {
+    final containerNo = cargo['containerNo'] ?? 'CONT-${cargo['item_number'] ?? 'N/A'}';
+    final pickup = cargo['pickupLocation'] ?? cargo['origin'] ?? 'Port Terminal';
+    final destination = cargo['destination'] ?? 'Delivery Point';
+    final description = cargo['description'] ?? 'No description';
+    final status = cargo['status']?.toString().toLowerCase() ?? 'pending';
+    final time = cargo['created_at'] != null 
+        ? _formatDate(cargo['created_at'] as Timestamp)
+        : cargo['confirmed_at'] != null
+            ? _formatDate(cargo['confirmed_at'] as Timestamp)
+            : 'No time';
 
-  Widget _buildNoSchedule() {
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 16),
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(colors: [Colors.white, Color(0xFFFAFBFF)]),
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(color: Colors.black.withOpacity(0.08), blurRadius: 20, offset: const Offset(0, 4)),
-        ],
-      ),
-      child: const Text(
-        'No schedules for today',
-        style: TextStyle(fontSize: 16, color: Color(0xFF64748B)),
-        textAlign: TextAlign.center,
-      ),
-    );
-  }
-
-  Widget _buildScheduleEntry(BuildContext context, String time, String container, String pickup, String destination, String status, Color statusColor, String scheduleId) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -508,11 +497,15 @@ class _SchedulePageState extends State<SchedulePage> {
               ),
               Row(
                 children: [
-                  Container(width: 8, height: 8, decoration: BoxDecoration(color: statusColor, shape: BoxShape.circle)),
+                  Container(width: 8, height: 8, decoration: BoxDecoration(color: _getStatusColor(status), shape: BoxShape.circle)),
                   const SizedBox(width: 6),
                   Text(
-                    status,
-                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: statusColor),
+                    status.toUpperCase(),
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                      color: _getStatusColor(status),
+                    ),
                   ),
                 ],
               ),
@@ -520,16 +513,20 @@ class _SchedulePageState extends State<SchedulePage> {
           ),
           const SizedBox(height: 8),
           Text(
-            container,
+            containerNo,
             style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Color(0xFF1E293B)),
           ),
           const SizedBox(height: 4),
           Text(
-            pickup,
+            description,
             style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
           ),
           Text(
-            destination,
+            'From: $pickup',
+            style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+          ),
+          Text(
+            'To: $destination',
             style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
           ),
           const SizedBox(height: 12),
@@ -543,110 +540,42 @@ class _SchedulePageState extends State<SchedulePage> {
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                     padding: const EdgeInsets.symmetric(vertical: 8),
                   ),
-                  onPressed: () {
-                    Widget destinationPage;
-                    if (status.toLowerCase() == "in progress") {
-                      destinationPage = LiveLocationPage(
-                        containerNo: container,
-                        time: time,
-                        pickup: pickup,
-                        destination: destination,
-                        status: status,
-                      );
-                    } else if (status.toLowerCase() == "scheduled" || status.toLowerCase() == "pending") {
-                      destinationPage = ContainerDetailsPage(
-                        containerNo: container,
-                        time: time,
-                        pickup: pickup,
-                        destination: destination,
-                        status: status,
-                        // Pass Firestore doc id if available for deliveryDocId, else null
-                      );
-                    } else if (status.toLowerCase() == "delayed") {
-                      destinationPage = StatusUpdatePage(
-                        containerNo: container,
-                        time: time,
-                        pickup: pickup,
-                        destination: destination,
-                        currentStatus: status,
-                      );
-                    } else {
-                      destinationPage = ContainerDetailsPage(
-                        containerNo: container,
-                        time: time,
-                        pickup: pickup,
-                        destination: destination,
-                        status: status,
-                      );
-                    }
-                    Navigator.push(context, MaterialPageRoute(builder: (context) => destinationPage));
-                  },
-                  child: const Text("View", style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+                  onPressed: () => _handleCargoTap(cargo),
+                  child: const Text("View Details", style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
                 ),
               ),
-              if (status.toLowerCase() == "delayed") ...[
-                const SizedBox(width: 8),
-                Expanded(
-                  child: ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF3B82F6),
-                      foregroundColor: Colors.white,
-                      elevation: 0,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                    ),
-                    onPressed: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => StatusUpdatePage(
-                            containerNo: container,
-                            time: time,
-                            pickup: pickup,
-                            destination: destination,
-                            currentStatus: status,
-                          ),
-                        ),
-                      );
-                    },
-                    child: const Text("Status Update", style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
-                  ),
-                ),
-              ],
             ],
           ),
         ],
       ),
     );
   }
-  Widget _buildHistoryEntry(String date, String container, String route, String status, Color statusColor) {
+
+  Widget _buildNoCargo() {
     return Container(
-      padding: const EdgeInsets.all(16),
+      margin: const EdgeInsets.symmetric(horizontal: 16),
+      padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: const Color(0xFFF8FAFC),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFFE2E8F0)),
+        gradient: const LinearGradient(colors: [Colors.white, Color(0xFFFAFBFF)]),
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(color: Colors.black.withOpacity(0.08), blurRadius: 20, offset: const Offset(0, 4)),
+        ],
       ),
-      child: Row(
+      child: const Column(
         children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(date, style: const TextStyle(fontSize: 12, color: Color(0xFF64748B))),
-                const SizedBox(height: 4),
-                Text(container, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Color(0xFF1E293B))),
-                const SizedBox(height: 2),
-                Text(route, style: const TextStyle(fontSize: 12, color: Color(0xFF64748B))),
-              ],
-            ),
+          Icon(Icons.local_shipping, size: 64, color: Color(0xFF64748B)),
+          SizedBox(height: 16),
+          Text(
+            'No cargo items found',
+            style: TextStyle(fontSize: 16, color: Color(0xFF64748B)),
+            textAlign: TextAlign.center,
           ),
-          Row(
-            children: [
-              Container(width: 8, height: 8, decoration: BoxDecoration(color: statusColor, shape: BoxShape.circle)),
-              const SizedBox(width: 6),
-              Text(status, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: statusColor)),
-            ],
+          SizedBox(height: 8),
+          Text(
+            'Cargo items will appear here when added to the system',
+            style: TextStyle(fontSize: 12, color: Color(0xFF94A3B8)),
+            textAlign: TextAlign.center,
           ),
         ],
       ),

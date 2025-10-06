@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'firebase_options.dart';
+import 'loading_screen.dart';
 import 'login_page.dart';
 import 'registration_page.dart';
 import 'homepage.dart';
@@ -14,87 +17,55 @@ import 'change_password_page.dart';
 import 'terms_privacy_page.dart';
 import 'contact_support_page.dart';
 import 'landing_page.dart';
-import 'package:firebase_core/firebase_core.dart';
-import 'firebase_options.dart';
 import 'courier_registration.dart';
 
-
-void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  
-  // Initialize Firebase with error handling
-  try {
-    await Firebase.initializeApp(
-      options: DefaultFirebaseOptions.currentPlatform,
-    );
-    print("Firebase initialized successfully");
-    runApp(const CargoDeliveryApp());
-  } catch (e) {
-    print("Firebase initialization failed: $e");
-    // Fallback: Run app without Firebase
-    runApp(const CargoDeliveryAppWithoutFirebase());
-  }
+void main() {
+  runApp(const CargoDeliveryApp());
 }
 
-// Fallback app for when Firebase initialization fails
-class CargoDeliveryAppWithoutFirebase extends StatelessWidget {
-  const CargoDeliveryAppWithoutFirebase({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Port Congestion Management',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        primarySwatch: Colors.blue,
-        fontFamily: 'Roboto',
-        visualDensity: VisualDensity.adaptivePlatformDensity,
-      ),
-      home: Scaffold(
-        body: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(20.0),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const Icon(Icons.error_outline, color: Colors.red, size: 64),
-                const SizedBox(height: 20),
-                const Text(
-                  'Firebase Configuration Error',
-                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 10),
-                const Text(
-                  'The app could not connect to Firebase services.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 16),
-                ),
-                const SizedBox(height: 20),
-                const Text(
-                  'Please check your internet connection and try again.',
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 30),
-                ElevatedButton(
-                  onPressed: () {
-                    // Try to restart the app
-                    main();
-                  },
-                  child: const Text('Retry'),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class CargoDeliveryApp extends StatelessWidget {
+class CargoDeliveryApp extends StatefulWidget {
   const CargoDeliveryApp({super.key});
 
   @override
+  State<CargoDeliveryApp> createState() => _CargoDeliveryAppState();
+}
+
+class _CargoDeliveryAppState extends State<CargoDeliveryApp> {
+  final Future<FirebaseApp> _initialization = Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder(
+      future: _initialization,
+      builder: (context, snapshot) {
+        // Check for errors
+        if (snapshot.hasError) {
+          print("Firebase initialization error: ${snapshot.error}");
+          return const MaterialApp(
+            home: ErrorApp(),
+          );
+        }
+
+        // Once complete, show your application
+        if (snapshot.connectionState == ConnectionState.done) {
+          return const MainApp();
+        }
+
+        // Otherwise, show something whilst waiting for initialization to complete
+        return const MaterialApp(
+          home: LoadingScreen(),
+        );
+      },
+    );
+  }
+}
+
+class MainApp extends StatelessWidget {
+  const MainApp({super.key});
+
+  @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Port Congestion Management',
@@ -104,9 +75,11 @@ class CargoDeliveryApp extends StatelessWidget {
         fontFamily: 'Roboto',
         visualDensity: VisualDensity.adaptivePlatformDensity,
       ),
-      initialRoute: '/',
+      // REMOVE the 'home' property and use only routes
+      initialRoute: '/loading',
       routes: {
-        '/': (context) => const LandingPage(),
+        '/loading': (context) => const LoadingScreen(),
+        '/': (context) => const LandingPage(), // This is now your initial route after loading
         '/login': (context) => const LoginPage(),
         '/registration': (context) => const RegistrationPage(),
         '/home': (context) => const HomePage(),
@@ -114,33 +87,22 @@ class CargoDeliveryApp extends StatelessWidget {
         '/livemap': (context) => const LiveMapPage(),
         '/settings': (context) => const SettingsPage(),
         '/live_location': (context) {
-          final args = ModalRoute.of(context)!.settings.arguments as Map<String, String>;
+          final args = ModalRoute.of(context)!.settings.arguments as Map<String, dynamic>;
           return LiveLocationPage(
-            containerNo: args['containerNo']!,
-            time: args['time']!,
-            pickup: args['pickup']!,
-            destination: args['destination']!,
-            status: args['status']!,
+            cargoData: args['cargoData'],
           );
         },
         '/container_details': (context) {
-          final args = ModalRoute.of(context)!.settings.arguments as Map<String, String>;
+          final args = ModalRoute.of(context)!.settings.arguments as Map<String, dynamic>;
           return ContainerDetailsPage(
-            containerNo: args['containerNo']!,
-            time: args['time']!,
-            pickup: args['pickup']!,
-            destination: args['destination']!,
-            status: args['status']!,
+            containerData: args['containerData'] ?? args['cargoData'], // Support both old and new parameter names
+            isAvailable: args['isAvailable'] ?? true, // Default to true if not provided
           );
         },
         '/status_update': (context) {
-          final args = ModalRoute.of(context)!.settings.arguments as Map<String, String>;
+          final args = ModalRoute.of(context)!.settings.arguments as Map<String, dynamic>;
           return StatusUpdatePage(
-            containerNo: args['containerNo']!,
-            time: args['time']!,
-            pickup: args['pickup']!,
-            destination: args['destination']!,
-            currentStatus: args['currentStatus']!,
+            cargoData: args['cargoData'],
           );
         },
         '/analytics': (context) => const AnalyticsPage(),
@@ -150,6 +112,50 @@ class CargoDeliveryApp extends StatelessWidget {
         '/contact_support': (context) => const ContactSupportPage(),
         '/courier-registration': (context) => const CourierRegistrationPage(),
       },
+    );
+  }
+}
+
+class ErrorApp extends StatelessWidget {
+  const ErrorApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(20.0),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.error_outline, color: Colors.red, size: 64),
+              const SizedBox(height: 20),
+              const Text(
+                'App Configuration Error',
+                style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 10),
+              const Text(
+                'There was an issue initializing the app.',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 16),
+              ),
+              const SizedBox(height: 20),
+              const Text(
+                'Please restart the app or check your connection.',
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 30),
+              ElevatedButton(
+                onPressed: () {
+                  main();
+                },
+                child: const Text('Restart App'),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

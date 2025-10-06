@@ -21,10 +21,13 @@ dependencies:
   firebase_storage: ^11.7.0
   firebase_messaging: ^14.7.0
   firebase_analytics: ^10.7.0
-  
+  google_sign_in: ^6.1.6
   # Image/File Handling
   image_picker: ^1.0.4
   file_picker: ^8.0.0
+  
+  # UI & Fonts
+  google_fonts: ^6.1.0
   
   # Web compatibility for file operations
   universal_io: ^2.0.8
@@ -35,9 +38,11 @@ dependencies:
   flutter_map: ^6.1.0
   latlong2: ^0.9.1
   flutter_svg: ^2.0.10
-  
+  http: ^1.1.0
   # Icons
   cupertino_icons: ^1.0.8
+  lottie: ^2.7.0
+  smooth_page_indicator: ^1.2.1
 
 dev_dependencies:
   flutter_test:
@@ -46,4 +51,8 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
-  
+  assets:
+    - assets/animations/loading_animation.json
+    - assets/images/page1.png
+    - assets/images/page2.png
+    - assets/images/page3.png

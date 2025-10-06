@@ -23,7 +23,7 @@ class _LoginPageState extends State<LoginPage> {
         content: Row(
           children: [
             Icon(
-              isSuccess ? Icons.check_circle : Icons.error,
+              isSuccess ? Icons.check_circle_rounded : Icons.error_rounded,
               color: Colors.white,
               size: 20,
             ),
@@ -31,7 +31,7 @@ class _LoginPageState extends State<LoginPage> {
             Expanded(
               child: Text(
                 message,
-                style: const TextStyle(
+                style: TextStyle(
                   color: Colors.white,
                   fontWeight: FontWeight.w600,
                 ),
@@ -39,11 +39,11 @@ class _LoginPageState extends State<LoginPage> {
             ),
           ],
         ),
-        backgroundColor: isSuccess ? Colors.green : Colors.red,
+        backgroundColor: isSuccess ? Color(0xFF10B981) : Color(0xFFEF4444),
         duration: const Duration(seconds: 3),
         behavior: SnackBarBehavior.floating,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(10),
+          borderRadius: BorderRadius.circular(12),
         ),
         margin: const EdgeInsets.all(16),
       ),
@@ -60,11 +60,9 @@ class _LoginPageState extends State<LoginPage> {
         String email = _emailController.text.trim();
         String password = _passwordController.text.trim();
         
-        // Sign in with Firebase Auth
         final UserCredential userCredential = await FirebaseAuth.instance
             .signInWithEmailAndPassword(email: email, password: password);
         
-        // Check if email is verified
         if (userCredential.user != null) {
           if (userCredential.user!.emailVerified) {
             _showNotification("Login successful! Welcome back.", true);
@@ -77,9 +75,7 @@ class _LoginPageState extends State<LoginPage> {
               );
             }
           } else {
-            // Email not verified
             _showNotification("Please verify your email before logging in.", false);
-            // Optionally, you can resend verification email
             await userCredential.user!.sendEmailVerification();
             _showNotification("Verification email sent. Please check your inbox.", true);
           }
@@ -99,12 +95,20 @@ class _LoginPageState extends State<LoginPage> {
           case 'user-disabled':
             errorMessage = 'This account has been disabled.';
             break;
+          case 'too-many-requests':
+            errorMessage = 'Too many login attempts. Please try again later.';
+            break;
+          case 'network-request-failed':
+            errorMessage = 'Network error. Please check your internet connection.';
+            break;
           default:
             errorMessage = 'Login failed: ${e.message}';
         }
         _showNotification(errorMessage, false);
+        print('Email login Firebase error: ${e.code} - ${e.message}');
       } catch (e) {
         _showNotification('An unexpected error occurred. Please try again.', false);
+        print('Email login error: $e');
       } finally {
         if (mounted) {
           setState(() {
@@ -122,22 +126,97 @@ class _LoginPageState extends State<LoginPage> {
       body: SingleChildScrollView(
         child: Column(
           children: [
-            const AppHeader(),
+            // Header with HomePage theme
             Container(
-              margin: const EdgeInsets.all(16),
-              padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(
-                gradient: const LinearGradient(
+              width: double.infinity,
+              padding: const EdgeInsets.fromLTRB(16, 50, 16, 40),
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
-                  colors: [Colors.white, Color(0xFFFAFBFF)],
+                  colors: [
+                    Color(0xFF1E40AF),
+                    Color(0xFF3B82F6),
+                  ],
                 ),
-                borderRadius: BorderRadius.circular(20),
+                borderRadius: BorderRadius.only(
+                  bottomLeft: Radius.circular(24),
+                  bottomRight: Radius.circular(24),
+                ),
+              ),
+              child: Column(
+                children: [
+                  // Logo and Brand Name
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        Icons.local_shipping_rounded,
+                        color: Colors.white,
+                        size: 36,
+                      ),
+                      const SizedBox(width: 12),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            "Port Congestion Management",
+                            style: TextStyle(
+                              fontSize: 28,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                              letterSpacing: 1.5,
+                            ),
+                          ),
+                          
+                        ],
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 20),
+                  
+                  // Tagline
+                  Text(
+                    "Smart Cargo • Real-Time Tracking • Global Reach",
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w500,
+                      color: Colors.white.withOpacity(0.8),
+                      letterSpacing: 0.5,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 8),
+                  
+                  // Main Description
+                  Text(
+                    "Professional Logistics Management Platform",
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                ],
+              ),
+            ),
+
+            // Login Form
+            Container(
+              margin: const EdgeInsets.all(20),
+              padding: const EdgeInsets.all(28),
+              constraints: BoxConstraints(
+                maxWidth: 500,
+              ),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(16),
                 boxShadow: [
                   BoxShadow(
                     color: Colors.black.withOpacity(0.08),
                     blurRadius: 20,
-                    offset: const Offset(0, 4),
+                    offset: Offset(0, 4),
                   ),
                 ],
               ),
@@ -146,25 +225,23 @@ class _LoginPageState extends State<LoginPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Center(
+                    Center(
                       child: Column(
                         children: [
                           Text(
                             "Welcome Back",
                             style: TextStyle(
-                              fontSize: 28,
-                              fontWeight: FontWeight.w700,
+                              fontSize: 24,
+                              fontWeight: FontWeight.bold,
                               color: Color(0xFF1E293B),
-                              letterSpacing: -0.5,
                             ),
                           ),
-                          SizedBox(height: 8),
+                          const SizedBox(height: 8),
                           Text(
-                            "Sign in to track and control your deliveries",
+                            "Access your cargo management dashboard",
                             style: TextStyle(
-                              fontSize: 16,
+                              fontSize: 14,
                               color: Color(0xFF64748B),
-                              fontWeight: FontWeight.w400,
                             ),
                             textAlign: TextAlign.center,
                           ),
@@ -173,12 +250,13 @@ class _LoginPageState extends State<LoginPage> {
                     ),
                     const SizedBox(height: 32),
                     
+                    // Email Field
                     Text(
                       "Email Address",
                       style: TextStyle(
                         fontSize: 14,
                         fontWeight: FontWeight.w600,
-                        color: Color(0xFF374151),
+                        color: Color(0xFF1E293B),
                       ),
                     ),
                     const SizedBox(height: 8),
@@ -186,36 +264,36 @@ class _LoginPageState extends State<LoginPage> {
                       controller: _emailController,
                       keyboardType: TextInputType.emailAddress,
                       decoration: InputDecoration(
-                        hintText: "Enter your email",
-                        prefixIcon: Container(
-                          margin: const EdgeInsets.all(12),
-                          padding: const EdgeInsets.all(8),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF3B82F6).withOpacity(0.1),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: const Icon(
-                            Icons.email_outlined,
-                            color: Color(0xFF3B82F6),
-                            size: 20,
-                          ),
+                        hintText: "Enter your email address",
+                        hintStyle: TextStyle(color: Color(0xFF94A3B8)),
+                        prefixIcon: Icon(
+                          Icons.email_outlined,
+                          color: Color(0xFF3B82F6),
                         ),
                         filled: true,
-                        fillColor: const Color(0xFFF8FAFC),
+                        fillColor: Color(0xFFF8FAFC),
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(12),
-                          borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+                          borderSide: BorderSide(color: Color(0xFFE2E8F0)),
                         ),
                         enabledBorder: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(12),
-                          borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+                          borderSide: BorderSide(color: Color(0xFFE2E8F0)),
                         ),
                         focusedBorder: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(12),
-                          borderSide: const BorderSide(color: Color(0xFF3B82F6), width: 2),
+                          borderSide: BorderSide(color: Color(0xFF3B82F6), width: 2),
                         ),
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+                        errorBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide(color: Color(0xFFEF4444)),
+                        ),
+                        focusedErrorBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide(color: Color(0xFFEF4444), width: 2),
+                        ),
                       ),
+                      style: TextStyle(fontSize: 16, color: Color(0xFF1E293B)),
                       validator: (value) {
                         if (value == null || value.isEmpty) {
                           return 'Please enter your email';
@@ -228,12 +306,13 @@ class _LoginPageState extends State<LoginPage> {
                     ),
                     const SizedBox(height: 20),
                     
+                    // Password Field
                     Text(
                       "Password",
                       style: TextStyle(
                         fontSize: 14,
                         fontWeight: FontWeight.w600,
-                        color: Color(0xFF374151),
+                        color: Color(0xFF1E293B),
                       ),
                     ),
                     const SizedBox(height: 8),
@@ -242,23 +321,15 @@ class _LoginPageState extends State<LoginPage> {
                       obscureText: !_isPasswordVisible,
                       decoration: InputDecoration(
                         hintText: "Enter your password",
-                        prefixIcon: Container(
-                          margin: const EdgeInsets.all(12),
-                          padding: const EdgeInsets.all(8),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF3B82F6).withOpacity(0.1),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: const Icon(
-                            Icons.lock_outline,
-                            color: Color(0xFF3B82F6),
-                            size: 20,
-                          ),
+                        hintStyle: TextStyle(color: Color(0xFF94A3B8)),
+                        prefixIcon: Icon(
+                          Icons.lock_outline_rounded,
+                          color: Color(0xFF3B82F6),
                         ),
                         suffixIcon: IconButton(
                           icon: Icon(
-                            _isPasswordVisible ? Icons.visibility_off : Icons.visibility,
-                            color: const Color(0xFF64748B),
+                            _isPasswordVisible ? Icons.visibility_off_rounded : Icons.visibility_rounded,
+                            color: Color(0xFF64748B),
                           ),
                           onPressed: () {
                             setState(() {
@@ -267,21 +338,29 @@ class _LoginPageState extends State<LoginPage> {
                           },
                         ),
                         filled: true,
-                        fillColor: const Color(0xFFF8FAFC),
+                        fillColor: Color(0xFFF8FAFC),
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(12),
-                          borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+                          borderSide: BorderSide(color: Color(0xFFE2E8F0)),
                         ),
                         enabledBorder: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(12),
-                          borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+                          borderSide: BorderSide(color: Color(0xFFE2E8F0)),
                         ),
                         focusedBorder: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(12),
-                          borderSide: const BorderSide(color: Color(0xFF3B82F6), width: 2),
+                          borderSide: BorderSide(color: Color(0xFF3B82F6), width: 2),
                         ),
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+                        errorBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide(color: Color(0xFFEF4444)),
+                        ),
+                        focusedErrorBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide(color: Color(0xFFEF4444), width: 2),
+                        ),
                       ),
+                      style: TextStyle(fontSize: 16, color: Color(0xFF1E293B)),
                       validator: (value) {
                         if (value == null || value.isEmpty) {
                           return 'Please enter your password';
@@ -294,16 +373,18 @@ class _LoginPageState extends State<LoginPage> {
                     ),
                     const SizedBox(height: 24),
                     
+                    // Forgot Password
                     Align(
                       alignment: Alignment.centerRight,
                       child: TextButton(
                         onPressed: () {
                           _showForgotPasswordDialog();
                         },
-                        child: const Text(
+                        child: Text(
                           "Forgot Password?",
                           style: TextStyle(
                             color: Color(0xFF3B82F6),
+                            fontSize: 14,
                             fontWeight: FontWeight.w600,
                           ),
                         ),
@@ -311,12 +392,13 @@ class _LoginPageState extends State<LoginPage> {
                     ),
                     const SizedBox(height: 24),
                     
+                    // Sign In Button
                     SizedBox(
                       width: double.infinity,
-                      height: 56,
+                      height: 50,
                       child: ElevatedButton(
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF3B82F6),
+                          backgroundColor: Color(0xFF3B82F6),
                           foregroundColor: Colors.white,
                           elevation: 0,
                           shadowColor: Colors.transparent,
@@ -334,37 +416,39 @@ class _LoginPageState extends State<LoginPage> {
                                   valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
                                 ),
                               )
-                            : const Text(
+                            : Text(
                                 "Sign In",
                                 style: TextStyle(
                                   fontSize: 16,
-                                  fontWeight: FontWeight.w600,
+                                  fontWeight: FontWeight.bold,
                                 ),
                               ),
                       ),
                     ),
+                    
                     const SizedBox(height: 24),
                     
+                    // Sign Up Link
                     Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        const Text(
+                        Text(
                           "Don't have an account? ",
                           style: TextStyle(
-                            color: Color(0xFF64748B),
                             fontSize: 14,
+                            color: Color(0xFF64748B),
                           ),
                         ),
                         GestureDetector(
                           onTap: () {
                             Navigator.pushNamed(context, '/registration');
                           },
-                          child: const Text(
+                          child: Text(
                             "Sign up",
                             style: TextStyle(
+                              fontSize: 14,
                               color: Color(0xFF3B82F6),
                               fontWeight: FontWeight.w600,
-                              fontSize: 14,
                             ),
                           ),
                         ),
@@ -385,7 +469,6 @@ class _LoginPageState extends State<LoginPage> {
     final formKey = GlobalKey<FormState>();
     bool isLoading = false;
     
-    // Store the context in a variable to ensure it's available
     final currentContext = context;
     
     await showDialog(
@@ -393,20 +476,32 @@ class _LoginPageState extends State<LoginPage> {
       builder: (context) => StatefulBuilder(
         builder: (dialogContext, setState) {
           return AlertDialog(
-            title: const Text("Reset Password"),
+            title: Text(
+              "Reset Password",
+              style: TextStyle(color: Color(0xFF1E293B)),
+            ),
             content: Form(
               key: formKey,
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Text("Enter your email address to receive a password reset link."),
+                  Text(
+                    "Enter your email address to receive a password reset link.",
+                    style: TextStyle(color: Color(0xFF64748B)),
+                  ),
                   const SizedBox(height: 16),
                   TextFormField(
                     controller: emailController,
                     keyboardType: TextInputType.emailAddress,
-                    decoration: const InputDecoration(
+                    decoration: InputDecoration(
                       labelText: "Email",
-                      border: OutlineInputBorder(),
+                      labelStyle: TextStyle(color: Color(0xFF64748B)),
+                      border: OutlineInputBorder(
+                        borderSide: BorderSide(color: Color(0xFFE2E8F0)),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderSide: BorderSide(color: Color(0xFF3B82F6)),
+                      ),
                     ),
                     validator: (value) {
                       if (value == null || value.isEmpty) {
@@ -424,9 +519,15 @@ class _LoginPageState extends State<LoginPage> {
             actions: [
               TextButton(
                 onPressed: isLoading ? null : () => Navigator.pop(dialogContext),
-                child: const Text("Cancel"),
+                child: Text(
+                  "Cancel",
+                  style: TextStyle(color: Color(0xFF64748B)),
+                ),
               ),
               ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Color(0xFF3B82F6),
+                ),
                 onPressed: isLoading 
                     ? null 
                     : () async {
@@ -440,10 +541,8 @@ class _LoginPageState extends State<LoginPage> {
                         email: emailController.text.trim(),
                       );
                       
-                      // Use dialogContext to pop the dialog
                       Navigator.pop(dialogContext);
                       
-                      // Show success message using the original context
                       _showNotification("Password reset email sent. Check your inbox.", true);
                     } on FirebaseAuthException catch (e) {
                       String errorMessage;
@@ -454,20 +553,21 @@ class _LoginPageState extends State<LoginPage> {
                         case 'invalid-email':
                           errorMessage = 'Invalid email address.';
                           break;
+                        case 'too-many-requests':
+                          errorMessage = 'Too many requests. Please try again later.';
+                          break;
                         default:
                           errorMessage = 'Error sending reset email: ${e.message}';
                       }
                       
-                      // Show error message using the original context
                       _showNotification(errorMessage, false);
                     } catch (e) {
-                      // Show error message using the original context
                       _showNotification("Error sending reset email. Please try again.", false);
                     }
                   }
                 },
                 child: isLoading
-                    ? const SizedBox(
+                    ? SizedBox(
                         height: 16,
                         width: 16,
                         child: CircularProgressIndicator(
@@ -475,7 +575,10 @@ class _LoginPageState extends State<LoginPage> {
                           valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
                         ),
                       )
-                    : const Text("Send Reset Link"),
+                    : Text(
+                        "Send Reset Link",
+                        style: TextStyle(color: Colors.white),
+                      ),
               ),
             ],
           );

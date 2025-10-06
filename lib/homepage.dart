@@ -2,13 +2,13 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'dart:convert';
 import 'schedulepage.dart';
 import 'livemap_page.dart';
 import 'settings_page.dart';
-import 'notifications_page.dart';
 import 'container_details_page.dart';
-import 'dart:convert';
-import 'package:http/http.dart' as http; // <-- Add this import
+import 'notifications_page.dart';
+import 'live_location_page.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -17,28 +17,27 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> {
+class _HomePageState extends State<HomePage> with AutoRefreshMixin {
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   User? _currentUser;
   Map<String, dynamic> _userData = {};
-  String _userRole = '';
-  int _notificationCount = 0;
-  List<Map<String, dynamic>> _upcomingTasks = [];
-  List<Map<String, dynamic>> _notifications = [];
   bool _isLoading = true;
   String? _errorMessage;
 
-  // Today's Summary
-  int _deliveredToday = 0;
-  int _pendingToday = 0;
-  int _delayedToday = 0;
-  Map<String, dynamic>? _currentDelivery;
+  // Image slider
+  final PageController _pageController = PageController();
+  final List<String> _sliderImages = [
+    'https://images.unsplash.com/photo-1601055929638-63c8b8e7cdeb?w=800&auto=format&fit=crop&q=60&ixlib=rb-4.0.3',
+    'https://images.unsplash.com/photo-1586528116311-ad8dd3c8310d?w=800&auto=format&fit=crop&q=60&ixlib=rb-4.0.3',
+    'https://images.unsplash.com/photo-1556742111-a301076d9dab?w=800&auto=format&fit=crop&q=60&ixlib=rb-4.0.3',
+  ];
+  int _currentPage = 0;
+  Timer? _autoSlideTimer;
 
-  // Assigned Deliveries (from Django API)
-  List<Map<String, dynamic>> _assignedDeliveries = [];
-  // Django API base URL - update this with your actual Django server URL
-  final String _djangoBaseUrl = 'http://127.0.0.1:8000/'; // <-- Set your Django server URL
+  // Cargo Lists
+  List<Map<String, dynamic>> _availableCargos = [];
+  List<Map<String, dynamic>> _inProgressDeliveries = [];
 
   @override
   void initState() {
@@ -46,8 +45,9 @@ class _HomePageState extends State<HomePage> {
     _currentUser = _auth.currentUser;
     if (_currentUser != null) {
       _loadData();
-      _setupNotificationsListener();
-      _loadAssignedDeliveriesFromDjango(); // <-- Use Django API for assigned deliveries
+      setupCargoListener(_loadAvailableCargos);
+      setupDeliveryListener(_currentUser!.uid, _loadInProgressDeliveries);
+      _startAutoSlide();
     } else {
       _isLoading = false;
       _errorMessage = "User not authenticated";
@@ -56,18 +56,35 @@ class _HomePageState extends State<HomePage> {
 
   @override
   void dispose() {
+    _pageController.dispose();
+    _autoSlideTimer?.cancel();
     super.dispose();
+  }
+
+  void _startAutoSlide() {
+    _autoSlideTimer?.cancel();
+    _autoSlideTimer = Timer.periodic(const Duration(seconds: 5), (Timer timer) {
+      if (_pageController.hasClients) {
+        if (_currentPage < _sliderImages.length - 1) {
+          _currentPage++;
+        } else {
+          _currentPage = 0;
+        }
+        _pageController.animateToPage(
+          _currentPage,
+          duration: const Duration(milliseconds: 500),
+          curve: Curves.easeInOut,
+        );
+      }
+    });
   }
 
   Future<void> _loadData() async {
     try {
       await Future.wait([
         _loadUserData(),
-        _loadNotifications(),
-        _loadUpcomingTasks(),
-        _loadTodaysSummary(),
-        _loadCurrentDelivery(),
-        _loadAssignedDeliveriesFromDjango(), // <-- Use Django API method here
+        _loadAvailableCargos(),
+        _loadInProgressDeliveries(),
       ]);
     } catch (e) {
       setState(() {
@@ -80,87 +97,125 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  // Helper to check if a delivery notification already exists
-  Future<bool> _hasDeliveryNotification(String deliveryId) async {
-    final query = await _firestore
-        .collection('notifications')
-        .where('userId', isEqualTo: _currentUser!.uid)
-        .where('type', isEqualTo: 'shipping')
-        .where('deliveryId', isEqualTo: deliveryId)
-        .limit(1)
-        .get();
-    return query.docs.isNotEmpty;
-  }
-
-  // Improved: Fetch assigned deliveries and create notification if new
-  Future<void> _loadAssignedDeliveriesFromDjango() async {
-    if (_currentUser == null) return;
+  Future<void> _loadAvailableCargos() async {
     try {
-      final response = await http.get(
-        Uri.parse('${_djangoBaseUrl}api/delivery-assignments/list/'),
-        headers: {'Content-Type': 'application/json'},
-      );
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        if (data['success'] == true) {
-          final newDeliveries = List<Map<String, dynamic>>.from(data['assignments'])
-              .where((delivery) =>
-                  delivery['assignedToId'] == _currentUser?.uid &&
-                  ['scheduled', 'pending', 'assigned'].contains(delivery['status']))
-              .toList();
+      print('Loading available cargos...');
+      
+      // Get all cargo documents
+      QuerySnapshot cargoSnapshot = await _firestore
+          .collection('Cargo')
+          .orderBy('created_at', descending: true)
+          .get();
 
-          // For each new delivery, add notification if not already present
-          for (var delivery in newDeliveries) {
-            final deliveryId = delivery['containerNo'] ?? delivery['delivery_id'] ?? '';
-            if (deliveryId.isNotEmpty && !(await _hasDeliveryNotification(deliveryId))) {
-              await _firestore.collection('notifications').add({
-                'userId': _currentUser!.uid,
-                'type': 'shipping',
-                'message': 'New delivery assigned: Container $deliveryId',
-                'timestamp': Timestamp.now(),
-                'read': false,
-                'deliveryId': deliveryId,
-              });
-            }
-          }
+      // Get all cargo IDs that have delivery records
+      QuerySnapshot deliverySnapshot = await _firestore
+          .collection('CargoDelivery')
+          .get();
 
-          setState(() {
-            _assignedDeliveries = newDeliveries;
-          });
-        } else {
-          print('Error from Django API: ${data['error']}');
+      Set<String> assignedCargoIds = {};
+      for (var doc in deliverySnapshot.docs) {
+        var deliveryData = doc.data() as Map<String, dynamic>;
+        if (deliveryData['cargo_id'] != null) {
+          assignedCargoIds.add(deliveryData['cargo_id'].toString());
         }
-      } else {
-        print('HTTP error: ${response.statusCode}');
       }
+
+      List<Map<String, dynamic>> availableCargos = [];
+      for (var doc in cargoSnapshot.docs) {
+        var cargoData = doc.data() as Map<String, dynamic>;
+        
+        // Only include cargos that are not assigned to any delivery
+        if (!assignedCargoIds.contains(doc.id)) {
+          Map<String, dynamic> combinedData = {
+            'cargo_id': doc.id,
+            'containerNo': 'CONT-${cargoData['item_number']?.toString() ?? 'N/A'}',
+            'status': cargoData['status']?.toString() ?? 'pending',
+            'pickupLocation': cargoData['origin']?.toString() ?? 'Port Terminal',
+            'destination': cargoData['destination']?.toString() ?? 'Delivery Point',
+            'created_at': cargoData['created_at'],
+            'description': cargoData['description']?.toString() ?? 'N/A',
+            'weight': cargoData['weight'] ?? 0.0,
+            'value': cargoData['value'] ?? 0.0,
+            'hs_code': cargoData['hs_code']?.toString() ?? 'N/A',
+            'quantity': cargoData['quantity'] ?? 0,
+            'item_number': cargoData['item_number'] ?? 0,
+            'additional_info': cargoData['additional_info']?.toString() ?? '',
+            'submanifest_id': cargoData['submanifest_id']?.toString() ?? '',
+          };
+          availableCargos.add(combinedData);
+        }
+      }
+
+      setState(() {
+        _availableCargos = availableCargos;
+      });
+      
+      print('Found ${_availableCargos.length} available cargos');
     } catch (e) {
-      print('Error loading deliveries from Django: $e');
+      print('Error loading available cargos: $e');
     }
   }
 
-  void _setupNotificationsListener() {
-    if (_currentUser != null) {
-      _firestore
-          .collection('notifications')
-          .where('userId', isEqualTo: _currentUser!.uid)
-          .orderBy('timestamp', descending: true)
-          .snapshots()
-          .listen((snapshot) {
-        if (mounted) {
-          List<Map<String, dynamic>> notifications = [];
-          for (var doc in snapshot.docs) {
-            var notification = doc.data();
-            notifications.add({
-              ...notification,
-              'id': doc.id,
-            });
+  Future<void> _loadInProgressDeliveries() async {
+    try {
+      print('Loading in-progress deliveries...');
+      
+      QuerySnapshot deliverySnapshot = await _firestore
+          .collection('CargoDelivery')
+          .where('courier_id', isEqualTo: _currentUser!.uid)
+          .get();
+
+      List<Map<String, dynamic>> inProgressDeliveries = [];
+      
+      for (var doc in deliverySnapshot.docs) {
+        var deliveryData = doc.data() as Map<String, dynamic>;
+        String status = deliveryData['status']?.toString().toLowerCase() ?? '';
+        
+        // Only include in-progress, in_transit, or assigned statuses
+        if (status == 'in-progress' || status == 'in_transit' || status == 'assigned') {
+          // Get cargo details using cargo_id foreign key
+          try {
+            DocumentSnapshot cargoDoc = await _firestore
+                .collection('Cargo')
+                .doc(deliveryData['cargo_id'].toString())
+                .get();
+
+            if (cargoDoc.exists) {
+              var cargoData = cargoDoc.data() as Map<String, dynamic>;
+              
+              Map<String, dynamic> combinedData = {
+                'delivery_id': doc.id,
+                'cargo_id': deliveryData['cargo_id'],
+                'containerNo': 'CONT-${cargoData['item_number'] ?? 'N/A'}',
+                'status': deliveryData['status'] ?? 'in-progress',
+                'pickupLocation': cargoData['origin'] ?? 'Port Terminal',
+                'destination': cargoData['destination'] ?? 'Delivery Point',
+                'confirmed_at': deliveryData['confirmed_at'],
+                'courier_id': deliveryData['courier_id'],
+                'description': cargoData['description'] ?? 'N/A',
+                'weight': cargoData['weight'] ?? 0.0,
+                'value': cargoData['value'] ?? 0.0,
+                'hs_code': cargoData['hs_code'] ?? 'N/A',
+                'quantity': cargoData['quantity'] ?? 0,
+                'item_number': cargoData['item_number'] ?? 0,
+                'proof_image': deliveryData['proof_image'],
+                'confirmed_by': deliveryData['confirmed_by'],
+              };
+              inProgressDeliveries.add(combinedData);
+            }
+          } catch (e) {
+            print('Error loading cargo details for delivery: $e');
           }
-          setState(() {
-            _notifications = notifications;
-            _notificationCount = notifications.where((n) => n['read'] == false).length;
-          });
         }
+      }
+
+      setState(() {
+        _inProgressDeliveries = inProgressDeliveries;
       });
+      
+      print('Found ${_inProgressDeliveries.length} in-progress deliveries');
+    } catch (e) {
+      print('Error loading in-progress deliveries: $e');
     }
   }
 
@@ -175,277 +230,63 @@ class _HomePageState extends State<HomePage> {
         if (courierDoc.exists) {
           setState(() {
             _userData = courierDoc.data() as Map<String, dynamic>;
-            _userRole = 'courier';
           });
           return;
         }
-        setState(() {
-          _errorMessage = "User profile not found";
-        });
       } catch (e) {
-        setState(() {
-          _errorMessage = "Error loading user profile";
-        });
+        print('Error loading user profile: $e');
       }
     }
   }
 
-  Future<void> _loadNotifications() async {
-    if (_currentUser != null) {
+  // Accept a cargo delivery
+  Future<void> _acceptCargoDelivery(Map<String, dynamic> cargoData) async {
+    try {
+      final user = _auth.currentUser;
+      if (user == null) {
+        _showErrorModal('User not authenticated');
+        return;
+      }
+
+      // Create CargoDelivery document with correct field names
+      await _firestore.collection('CargoDelivery').add({
+        'cargo_id': cargoData['cargo_id'],
+        'courier_id': user.uid,
+        'status': 'in-progress',
+        'confirmed_at': Timestamp.now(),
+        'confirmed_by': 'courier',
+        'proof_image': '',
+        'remarks': 'Accepted by courier',
+      });
+
+      // Update cargo status
+      await _firestore.collection('Cargo').doc(cargoData['cargo_id']).update({
+        'status': 'in-progress',
+        'updated_at': Timestamp.now(),
+      });
+
+      // Create notification for admin
       try {
-        QuerySnapshot notificationsSnapshot = await _firestore
-            .collection('notifications')
-            .where('userId', isEqualTo: _currentUser!.uid)
-            .orderBy('timestamp', descending: true)
-            .limit(5)
-            .get();
-
-        List<Map<String, dynamic>> notifications = [];
-        for (var doc in notificationsSnapshot.docs) {
-          var notification = doc.data() as Map<String, dynamic>;
-          notifications.add({
-            ...notification,
-            'id': doc.id,
-          });
-        }
-
-        setState(() {
-          _notifications = notifications;
-          _notificationCount = notifications.where((n) => n['read'] == false).length;
+        await _firestore.collection('notifications').add({
+          'userId': 'admin',
+          'type': 'delivery_assigned',
+          'message': 'Cargo ${cargoData['containerNo']} has been accepted by ${_getFullName()}',
+          'timestamp': Timestamp.now(),
+          'read': false,
+          'cargoId': cargoData['cargo_id'],
+          'containerNo': cargoData['containerNo'],
         });
       } catch (e) {
-        // Silently handle error - notifications are optional
+        print('Error creating notification: $e');
       }
-    }
-  }
 
-  Future<void> _loadUpcomingTasks() async {
-    if (_currentUser != null) {
-      try {
-        DateTime now = DateTime.now();
-        DateTime startOfToday = DateTime(now.year, now.month, now.day);
-
-        QuerySnapshot tasksSnapshot = await _firestore
-            .collection('tasks')
-            .where('userId', isEqualTo: _currentUser!.uid)
-            .get();
-
-        List<Map<String, dynamic>> tasks = [];
-        for (var doc in tasksSnapshot.docs) {
-          var task = doc.data() as Map<String, dynamic>;
-          if (task['scheduleDate'] != null) {
-            DateTime scheduleDate = (task['scheduleDate'] as Timestamp).toDate();
-            if (scheduleDate.isAfter(startOfToday) ||
-                scheduleDate.isAtSameMomentAs(startOfToday)) {
-              tasks.add({
-                ...task,
-                'id': doc.id,
-              });
-            }
-          }
-        }
-
-        tasks.sort((a, b) {
-          DateTime dateA = (a['scheduleDate'] as Timestamp).toDate();
-          DateTime dateB = (b['scheduleDate'] as Timestamp).toDate();
-          if (dateA.isAtSameMomentAs(dateB)) {
-            TimeOfDay timeA = _parseTimeFromString(a['scheduleTime']);
-            TimeOfDay timeB = _parseTimeFromString(b['scheduleTime']);
-            return timeA.hour * 60 + timeA.minute - (timeB.hour * 60 + timeB.minute);
-          }
-          return dateA.compareTo(dateB);
-        });
-
-        setState(() {
-          _upcomingTasks = tasks.take(3).toList();
-        });
-      } catch (e) {
-        // Silently handle error - tasks are optional
-      }
-    }
-  }
-
-  Future<void> _loadTodaysSummary() async {
-    if (_currentUser != null) {
-      try {
-        DateTime now = DateTime.now();
-        DateTime startOfToday = DateTime(now.year, now.month, now.day);
-        DateTime endOfToday = DateTime(now.year, now.month, now.day, 23, 59, 59);
-
-        QuerySnapshot tasksSnapshot = await _firestore
-            .collection('tasks')
-            .where('userId', isEqualTo: _currentUser!.uid)
-            .where('scheduleDate', isGreaterThanOrEqualTo: Timestamp.fromDate(startOfToday))
-            .where('scheduleDate', isLessThanOrEqualTo: Timestamp.fromDate(endOfToday))
-            .get();
-
-        int delivered = 0;
-        int pending = 0;
-        int delayed = 0;
-
-        for (var doc in tasksSnapshot.docs) {
-          var task = doc.data() as Map<String, dynamic>;
-          String status = task['status']?.toString().toLowerCase() ?? 'pending';
-          if (status == 'delivered') {
-            delivered++;
-          } else if (status == 'pending') {
-            pending++;
-          } else if (status == 'delayed') {
-            delayed++;
-          }
-        }
-
-        setState(() {
-          _deliveredToday = delivered;
-          _pendingToday = pending;
-          _delayedToday = delayed;
-        });
-      } catch (e) {
-        // Silently handle error - summary is optional
-      }
-    }
-  }
-
-  Future<void> _loadCurrentDelivery() async {
-    if (_currentUser != null) {
-      try {
-        DateTime now = DateTime.now();
-
-        QuerySnapshot tasksSnapshot = await _firestore
-            .collection('tasks')
-            .where('userId', isEqualTo: _currentUser!.uid)
-            .where('status', whereIn: ['pending', 'in-progress', 'delayed'])
-            .orderBy('scheduleDate')
-            .limit(1)
-            .get();
-
-        if (tasksSnapshot.docs.isNotEmpty) {
-          var task = tasksSnapshot.docs.first.data() as Map<String, dynamic>;
-          String origin = task['origin'] ?? 'Gothong Port';
-          String destination = task['destination'] ?? 'Carcar';
-          int distance = _calculateDistance(origin, destination);
-
-          setState(() {
-            _currentDelivery = {
-              ...task,
-              'origin': origin,
-              'destination': destination,
-              'distance': distance,
-            };
-          });
-        } else {
-          setState(() {
-            _currentDelivery = null;
-          });
-        }
-      } catch (e) {
-        // Silently handle error - current delivery is optional
-      }
-    }
-  }
-
-  int _calculateDistance(String origin, String destination) {
-    if (origin.contains('Gothong') && destination.contains('Carcar')) {
-      return 100;
-    } else if (origin.contains('Gothong') && destination.contains('Toledo')) {
-      return 85;
-    } else if (origin.contains('Gothong') && destination.contains('Naga')) {
-      return 45;
-    } else {
-      return 60;
-    }
-  }
-
-  String _getStatusColor(String status) {
-    switch (status.toLowerCase()) {
-      case 'delivered':
-        return '0xFF10B981';
-      case 'pending':
-        return '0xFFF59E0B';
-      case 'delayed':
-        return '0xFFEF4444';
-      default:
-        return '0xFF3B82F6';
-    }
-  }
-
-  String _getDayAbbreviation(DateTime date) {
-    switch (date.weekday) {
-      case 1:
-        return 'Mon';
-      case 2:
-        return 'Tue';
-      case 3:
-        return 'Wed';
-      case 4:
-        return 'Thu';
-      case 5:
-        return 'Fri';
-      case 6:
-        return 'Sat';
-      case 7:
-        return 'Sun';
-      default:
-        return '';
-    }
-  }
-
-  String _formatTime(TimeOfDay time) {
-    final hour = time.hourOfPeriod;
-    final minute = time.minute.toString().padLeft(2, '0');
-    final period = time.period == DayPeriod.am ? 'AM' : 'PM';
-    return '$hour:$minute $period';
-  }
-
-  String _formatTimeAgo(Timestamp timestamp) {
-    final now = DateTime.now();
-    final time = timestamp.toDate();
-    final difference = now.difference(time);
-
-    if (difference.inMinutes < 1) {
-      return 'Just now';
-    } else if (difference.inMinutes < 60) {
-      return '${difference.inMinutes} minutes ago';
-    } else if (difference.inHours < 24) {
-      return '${difference.inHours} hours ago';
-    } else if (difference.inDays < 7) {
-      return '${difference.inDays} days ago';
-    } else {
-      return '${time.day}/${time.month}/${time.year}';
-    }
-  }
-
-  IconData _getNotificationIcon(String type) {
-    switch (type) {
-      case 'warning':
-        return Icons.warning_amber;
-      case 'info':
-        return Icons.info_outline;
-      case 'success':
-        return Icons.check_circle_outline;
-      case 'error':
-        return Icons.error_outline;
-      case 'shipping':
-        return Icons.local_shipping;
-      default:
-        return Icons.notifications;
-    }
-  }
-
-  Color _getNotificationColor(String type) {
-    switch (type) {
-      case 'warning':
-        return const Color(0xFFF59E0B);
-      case 'info':
-        return const Color(0xFF3B82F6);
-      case 'success':
-        return const Color(0xFF10B981);
-      case 'error':
-        return const Color(0xFFEF4444);
-      case 'shipping':
-        return const Color(0xFF8B5CF6);
-      default:
-        return const Color(0xFF3B82F6);
+      // Refresh data
+      await _loadData();
+      
+      _showSuccessModal('Cargo accepted successfully!');
+    } catch (e) {
+      print('Error accepting cargo: $e');
+      _showErrorModal('Failed to accept cargo. Please try again.');
     }
   }
 
@@ -467,8 +308,8 @@ class _HomePageState extends State<HomePage> {
     return _userData['driverId'] ?? _userData['license_number'] ?? 'N/A';
   }
 
-  String _getRoleText() {
-    return "License No.";
+  String _getCourierStatus() {
+    return _inProgressDeliveries.isNotEmpty ? 'On Delivery' : 'Available';
   }
 
   Widget _getProfileWidget() {
@@ -479,7 +320,7 @@ class _HomePageState extends State<HomePage> {
       }
       try {
         return CircleAvatar(
-          radius: 20,
+          radius: 30,
           backgroundImage: MemoryImage(base64Decode(profileImageBase64)),
         );
       } catch (e) {
@@ -492,12 +333,12 @@ class _HomePageState extends State<HomePage> {
 
   Widget _buildDefaultProfile() {
     return CircleAvatar(
-      radius: 20,
+      radius: 30,
       backgroundColor: Colors.white.withOpacity(0.2),
       child: const Icon(
         Icons.person,
         color: Colors.white,
-        size: 20,
+        size: 30,
       ),
     );
   }
@@ -510,10 +351,13 @@ class _HomePageState extends State<HomePage> {
         return 'Pending';
       case 'assigned':
         return 'Assigned';
+      case 'in-progress':
       case 'in_transit':
-        return 'In Transit';
+        return 'In Progress';
       case 'delivered':
         return 'Delivered';
+      case 'delayed':
+        return 'Delayed';
       default:
         return status;
     }
@@ -527,13 +371,118 @@ class _HomePageState extends State<HomePage> {
         return const Color(0xFFF59E0B);
       case 'assigned':
         return const Color(0xFF8B5CF6);
+      case 'in-progress':
       case 'in_transit':
         return const Color(0xFF6366F1);
       case 'delivered':
         return const Color(0xFF10B981);
+      case 'delayed':
+        return const Color(0xFFEF4444);
       default:
         return const Color(0xFF64748B);
     }
+  }
+
+  String _formatTimeAgo(Timestamp timestamp) {
+    final now = DateTime.now();
+    final time = timestamp.toDate();
+    final difference = now.difference(time);
+
+    if (difference.inMinutes < 1) {
+      return 'Just now';
+    } else if (difference.inMinutes < 60) {
+      return '${difference.inMinutes}m ago';
+    } else if (difference.inHours < 24) {
+      return '${difference.inHours}h ago';
+    } else if (difference.inDays < 7) {
+      return '${difference.inDays}d ago';
+    } else {
+      return '${time.day}/${time.month}/${time.year}';
+    }
+  }
+
+  void _showSuccessModal(String message) {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return Dialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.check_circle,
+                  color: Color(0xFF10B981),
+                  size: 64,
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  message,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                ElevatedButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF3B82F6),
+                    minimumSize: const Size(120, 48),
+                  ),
+                  child: const Text('OK'),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  void _showErrorModal(String message) {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return Dialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.error,
+                  color: Color(0xFFEF4444),
+                  size: 64,
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  message,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                ElevatedButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF3B82F6),
+                    minimumSize: const Size(120, 48),
+                  ),
+                  child: const Text('OK'),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
   @override
@@ -573,10 +522,10 @@ class _HomePageState extends State<HomePage> {
       body: SingleChildScrollView(
         child: Column(
           children: [
-            // Header
+            // Header with gradient background
             Container(
               width: double.infinity,
-              padding: const EdgeInsets.fromLTRB(16, 30, 16, 20),
+              padding: const EdgeInsets.fromLTRB(16, 40, 16, 20),
               decoration: const BoxDecoration(
                 gradient: LinearGradient(
                   begin: Alignment.topLeft,
@@ -587,133 +536,63 @@ class _HomePageState extends State<HomePage> {
                   ],
                 ),
                 borderRadius: BorderRadius.only(
-                  bottomLeft: Radius.circular(16),
-                  bottomRight: Radius.circular(16),
+                  bottomLeft: Radius.circular(20),
+                  bottomRight: Radius.circular(20),
                 ),
               ),
-              child: Column(
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
+                  // App title with icon
                   Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Row(
+                      Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(0.2),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: const Icon(
+                          Icons.local_shipping_rounded,
+                          color: Colors.white,
+                          size: 28,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      const Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          _getProfileWidget(),
-                          const SizedBox(width: 12),
-                          Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                _getFullName(),
-                                style: const TextStyle(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w600,
-                                  color: Colors.white,
-                                ),
-                              ),
-                              Text(
-                                "${_getRoleText()} ${_getDriverId()}",
-                                style: const TextStyle(
-                                  fontSize: 12,
-                                  color: Colors.white70,
-                                ),
-                              ),
-                            ],
+                          Text(
+                            "CARGO EXPRESS",
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w800,
+                              color: Colors.white,
+                              letterSpacing: 1.1,
+                            ),
+                          ),
+                          SizedBox(height: 2),
+                          Text(
+                            "Fast Delivery",
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.white70,
+                            ),
                           ),
                         ],
                       ),
-                      GestureDetector(
-                        onTap: () {
-                          if (_currentUser != null) {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (context) => NotificationsPage(userId: _currentUser!.uid),
-                              ),
-                            ).then((_) {
-                              _loadNotifications();
-                            });
-                          }
-                        },
-                        child: Stack(
-                          children: [
-                            Container(
-                              padding: const EdgeInsets.all(8),
-                              decoration: BoxDecoration(
-                                color: Colors.white.withOpacity(0.2),
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              child: const Icon(
-                                Icons.notifications_outlined,
-                                color: Colors.white,
-                                size: 20,
-                              ),
-                            ),
-                            if (_notificationCount > 0)
-                              Positioned(
-                                right: 4,
-                                top: 4,
-                                child: Container(
-                                  padding: const EdgeInsets.all(4),
-                                  decoration: const BoxDecoration(
-                                    color: Color(0xFFEF4444),
-                                    shape: BoxShape.circle,
-                                  ),
-                                  child: Text(
-                                    _notificationCount > 9 ? '9+' : _notificationCount.toString(),
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 10,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                          ],
-                        ),
-                      ),
                     ],
                   ),
-                  const SizedBox(height: 16),
-                  StreamBuilder<QuerySnapshot>(
-                    stream: _firestore
-                        .collection('tasks')
-                        .where('userId', isEqualTo: _currentUser?.uid)
-                        .snapshots(),
-                    builder: (context, snapshot) {
-                      if (!snapshot.hasData) {
-                        return Row(
-                          children: [
-                            Expanded(child: _buildStatusCard("0", "Delivered", const Color(0xFF10B981))),
-                            const SizedBox(width: 12),
-                            Expanded(child: _buildStatusCard("0", "Pending", const Color(0xFFF59E0B))),
-                            const SizedBox(width: 12),
-                            Expanded(child: _buildStatusCard("0", "Delayed", const Color(0xFFEF4444))),
-                          ],
-                        );
-                      }
-                      int delivered = 0;
-                      int pending = 0;
-                      int delayed = 0;
-                      for (var doc in snapshot.data!.docs) {
-                        var task = doc.data() as Map<String, dynamic>;
-                        String status = task['status']?.toString().toLowerCase() ?? 'pending';
-                        if (status == 'delivered') {
-                          delivered++;
-                        } else if (status == 'pending') {
-                          pending++;
-                        } else if (status == 'delayed') {
-                          delayed++;
-                        }
-                      }
-                      return Row(
-                        children: [
-                          Expanded(child: _buildStatusCard(delivered.toString(), "Delivered", const Color(0xFF10B981))),
-                          const SizedBox(width: 12),
-                          Expanded(child: _buildStatusCard(pending.toString(), "Pending", const Color(0xFFF59E0B))),
-                          const SizedBox(width: 12),
-                          Expanded(child: _buildStatusCard(delayed.toString(), "Delayed", const Color(0xFFEF4444))),
-                        ],
+                  
+                  // Notification icon
+                  IconButton(
+                    icon: const Icon(Icons.notifications, color: Colors.white, size: 24),
+                    onPressed: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => NotificationsPage(userId: _currentUser!.uid),
+                        ),
                       );
                     },
                   ),
@@ -721,160 +600,259 @@ class _HomePageState extends State<HomePage> {
               ),
             ),
 
-            const SizedBox(height: 16),
-
-            // Assigned Deliveries from Django
-            if (_assignedDeliveries.isNotEmpty)
-              Container(
-                margin: const EdgeInsets.symmetric(horizontal: 16),
-                padding: const EdgeInsets.all(20),
-                decoration: BoxDecoration(
-                  gradient: const LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [Colors.white, Color(0xFFFAFBFF)],
-                  ),
-                  borderRadius: BorderRadius.circular(16),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.08),
-                      blurRadius: 20,
-                      offset: const Offset(0, 4),
-                    ),
-                  ],
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Text(
-                          "New Cargo Deliveries",
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.w700,
-                            color: Color(0xFF1E293B),
-                          ),
-                        ),
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF3B82F6).withOpacity(0.1),
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: Text(
-                            _assignedDeliveries.length.toString(),
-                            style: const TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
-                              color: Color(0xFF3B82F6),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    ..._assignedDeliveries.map((delivery) {
-                      return Column(
-                        children: [
-                          _buildCargoDeliveryCard(delivery),
-                          if (_assignedDeliveries.indexOf(delivery) < _assignedDeliveries.length - 1)
-                            const SizedBox(height: 12),
-                        ],
-                      );
-                    }),
-                  ],
-                ),
-              ),
-
-            const SizedBox(height: 16),
-
-            // Upcoming Schedule
+            // Profile Section
             Container(
-              margin: const EdgeInsets.symmetric(horizontal: 16),
+              margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
               padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                gradient: const LinearGradient(
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
-                  colors: [Colors.white, Color(0xFFFAFBFF)],
+                  colors: [
+                    Color(0xFF1E40AF),
+                    Color(0xFF3B82F6),
+                  ],
                 ),
-                borderRadius: BorderRadius.circular(16),
+                borderRadius: BorderRadius.all(Radius.circular(16)),
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withOpacity(0.08),
-                    blurRadius: 20,
-                    offset: const Offset(0, 4),
+                    color: Colors.black26,
+                    blurRadius: 15,
+                    offset: Offset(0, 6),
                   ),
                 ],
               ),
-              child: Column(
+              child: Row(
                 children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text(
-                        "Upcoming Schedule",
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w700,
-                          color: Color(0xFF1E293B),
-                        ),
-                      ),
-                      TextButton(
-                        onPressed: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(builder: (context) => const SchedulePage()),
-                          );
-                        },
-                        child: const Text(
-                          "View All",
-                          style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600,
-                            color: Color(0xFF3B82F6),
-                          ),
-                        ),
-                      ),
-                    ],
+                  // Profile Image
+                  Container(
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      border: Border.all(color: Colors.white, width: 3),
+                    ),
+                    child: _getProfileWidget(),
                   ),
-                  const SizedBox(height: 16),
-                  if (_upcomingTasks.isEmpty)
-                    const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 16.0),
-                      child: Text(
-                        "No upcoming tasks",
-                        style: TextStyle(
-                          color: Color(0xFF64748B),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // Name with icon
+                        Row(
+                          children: [
+                            const Icon(
+                              Icons.person_outline,
+                              color: Colors.white,
+                              size: 18,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              _getFullName(),
+                              style: const TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ],
                         ),
-                      ),
-                    )
-                  else
-                    ..._upcomingTasks.map((task) {
-                      DateTime scheduleDate = (task['scheduleDate'] as Timestamp).toDate();
-                      TimeOfDay scheduleTime = _parseTimeFromString(task['scheduleTime']);
-                      return Column(
-                        children: [
-                          _buildScheduleItem(
-                            _getDayAbbreviation(scheduleDate),
-                            _formatTime(scheduleTime),
-                            "Container No. ${task['containerNo']}",
-                            Color(int.parse(_getStatusColor(task['status'])))
-                          ),
-                          if (_upcomingTasks.indexOf(task) < _upcomingTasks.length - 1)
-                            const SizedBox(height: 12),
-                        ],
-                      );
-                    }),
+                        const SizedBox(height: 8),
+                        
+                        // License No with icon
+                        Row(
+                          children: [
+                            const Icon(
+                              Icons.badge_outlined,
+                              color: Colors.white70,
+                              size: 16,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              "License No: ${_getDriverId()}",
+                              style: const TextStyle(
+                                fontSize: 14,
+                                color: Colors.white70,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        
+                        // Status with icon
+                        Row(
+                          children: [
+                            Icon(
+                              _inProgressDeliveries.isNotEmpty 
+                                  ? Icons.delivery_dining 
+                                  : Icons.check_circle_outline,
+                              color: Colors.white,
+                              size: 16,
+                            ),
+                            const SizedBox(width: 6),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withOpacity(0.2),
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(color: Colors.white.withOpacity(0.3)),
+                              ),
+                              child: Text(
+                                _getCourierStatus(),
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.white,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
                 ],
               ),
             ),
 
-            const SizedBox(height: 16),
+            const SizedBox(height: 8),
 
-            // Today's Summary
+            // Image Slider
+            Container(
+              margin: const EdgeInsets.symmetric(horizontal: 16),
+              height: 150,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(16),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.1),
+                    blurRadius: 10,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: Stack(
+                children: [
+                  PageView.builder(
+                    controller: _pageController,
+                    itemCount: _sliderImages.length,
+                    onPageChanged: (int page) {
+                      setState(() {
+                        _currentPage = page;
+                      });
+                    },
+                    itemBuilder: (context, index) {
+                      return ClipRRect(
+                        borderRadius: BorderRadius.circular(16),
+                        child: Image.network(
+                          _sliderImages[index],
+                          fit: BoxFit.cover,
+                          width: double.infinity,
+                          loadingBuilder: (context, child, loadingProgress) {
+                            if (loadingProgress == null) return child;
+                            return Container(
+                              decoration: BoxDecoration(
+                                color: Colors.grey[300],
+                                borderRadius: BorderRadius.circular(16),
+                              ),
+                              child: const Center(
+                                child: CircularProgressIndicator(),
+                              ),
+                            );
+                          },
+                          errorBuilder: (context, error, stackTrace) {
+                            return Container(
+                              decoration: BoxDecoration(
+                                color: Colors.grey[300],
+                                borderRadius: BorderRadius.circular(16),
+                              ),
+                              child: const Center(
+                                child: Icon(Icons.error, color: Colors.grey),
+                              ),
+                            );
+                          },
+                        ),
+                      );
+                    },
+                  ),
+                  Positioned(
+                    bottom: 10,
+                    left: 0,
+                    right: 0,
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: List.generate(_sliderImages.length, (index) {
+                        return AnimatedContainer(
+                          duration: const Duration(milliseconds: 300),
+                          margin: const EdgeInsets.symmetric(horizontal: 4),
+                          width: _currentPage == index ? 20 : 8,
+                          height: 8,
+                          decoration: BoxDecoration(
+                            shape: _currentPage == index ? BoxShape.rectangle : BoxShape.circle,
+                            borderRadius: _currentPage == index ? BorderRadius.circular(4) : null,
+                            color: _currentPage == index ? Colors.white : Colors.white.withOpacity(0.5),
+                          ),
+                        );
+                      }),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            const SizedBox(height: 20),
+
+            // Cargos and Track Section
+            Container(
+              margin: const EdgeInsets.symmetric(horizontal: 16),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: _buildActionCard(
+                      "Cargos",
+                      Icons.local_shipping,
+                      const Color(0xFF3B82F6),
+                      _availableCargos.length.toString(),
+                      () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (context) => const SchedulePage()),
+                        );
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _buildActionCard(
+                      "Track",
+                      Icons.track_changes,
+                      const Color(0xFF10B981),
+                      _inProgressDeliveries.length.toString(),
+                      () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (context) => const LiveMapPage()),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            const SizedBox(height: 20),
+
+            // Available Cargos Section
+            if (_availableCargos.isNotEmpty)
+              _buildCargoSection(
+                "Available Deliveries",
+                _availableCargos,
+                _availableCargos.length,
+                true, // isAvailable
+              ),
+
+            const SizedBox(height: 20),
+
+            // Reports Section
             Container(
               margin: const EdgeInsets.symmetric(horizontal: 16),
               padding: const EdgeInsets.all(20),
@@ -897,7 +875,7 @@ class _HomePageState extends State<HomePage> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text(
-                    "Today's Summary",
+                    "Reports",
                     style: TextStyle(
                       fontSize: 18,
                       fontWeight: FontWeight.w700,
@@ -905,189 +883,32 @@ class _HomePageState extends State<HomePage> {
                     ),
                   ),
                   const SizedBox(height: 16),
-                  Row(
+                  GridView.count(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    crossAxisCount: 2,
+                    crossAxisSpacing: 12,
+                    mainAxisSpacing: 12,
+                    childAspectRatio: 2.5,
                     children: [
-                      Expanded(
-                        child: _buildSummaryItem(_deliveredToday.toString(), "DELIVERED", const Color(0xFF10B981)),
-                      ),
-                      Expanded(
-                        child: _buildSummaryItem(_pendingToday.toString(), "PENDING", const Color(0xFFF59E0B)),
-                      ),
-                      Expanded(
-                        child: _buildSummaryItem(_delayedToday.toString(), "DELAYED", const Color(0xFFEF4444)),
-                      ),
+                      _buildReportItem("Order History", Icons.history, const Color(0xFF3B82F6)),
+                      _buildReportItem("Performance", Icons.assessment, const Color(0xFFF59E0B)),
                     ],
                   ),
-                  const SizedBox(height: 16),
-                  if (_currentDelivery != null)
-                    Container(
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFF8FAFC),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: const Color(0xFFE2E8F0)),
-                      ),
-                      child: Row(
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.all(8),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF3B82F6).withOpacity(0.1),
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: const Icon(
-                              Icons.local_shipping,
-                              color: Color(0xFF3B82F6),
-                              size: 20,
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  "${_currentDelivery!['origin']} - ${_currentDelivery!['destination']}",
-                                  style: const TextStyle(
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w600,
-                                    color: Color(0xFF1E293B),
-                                  ),
-                                ),
-                                Text(
-                                  "Container No. ${_currentDelivery!['containerNo'] ?? 'N/A'}",
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    color: Color(0xFF64748B),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          Text(
-                            "Distance ${_currentDelivery!['distance']}km",
-                            style: const TextStyle(
-                              fontSize: 12,
-                              color: Color(0xFF64748B),
-                            ),
-                          ),
-                        ],
-                      ),
-                    )
-                  else
-                    Container(
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFF8FAFC),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: const Color(0xFFE2E8F0)),
-                      ),
-                      child: const Center(
-                        child: Text(
-                          "No active deliveries",
-                          style: TextStyle(
-                            fontSize: 14,
-                            color: Color(0xFF64748B),
-                          ),
-                        ),
-                      ),
-                    ),
                 ],
               ),
             ),
 
-            const SizedBox(height: 16),
+            const SizedBox(height: 20),
 
-            // Notifications
-            Container(
-              margin: const EdgeInsets.symmetric(horizontal: 16),
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                gradient: const LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [Colors.white, Color(0xFFFAFBFF)],
-                ),
-                borderRadius: BorderRadius.circular(16),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.08),
-                    blurRadius: 20,
-                    offset: const Offset(0, 4),
-                  ),
-                ],
+            // In Progress Deliveries Section
+            if (_inProgressDeliveries.isNotEmpty)
+              _buildCargoSection(
+                "Track Your Deliveries",
+                _inProgressDeliveries,
+                _inProgressDeliveries.length,
+                false, // isAvailable
               ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text(
-                        "Notifications",
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w700,
-                          color: Color(0xFF1E293B),
-                        ),
-                      ),
-                      if (_notifications.isNotEmpty)
-                        TextButton(
-                          onPressed: () {
-                            if (_currentUser != null) {
-                              Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (context) => NotificationsPage(userId: _currentUser!.uid),
-                                ),
-                              ).then((_) {
-                                _loadNotifications();
-                              });
-                            }
-                          },
-                          child: const Text(
-                            "View All",
-                            style: TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w600,
-                              color: Color(0xFF3B82F6),
-                            ),
-                          ),
-                        ),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-
-                  if (_notifications.isEmpty)
-                    const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 8.0),
-                      child: Text(
-                        "No notifications yet",
-                        style: TextStyle(
-                          color: Color(0xFF64748B),
-                        ),
-                      ),
-                    )
-                  else
-                    ..._notifications.take(2).map((notification) {
-                      return Column(
-                        children: [
-                          _buildNotificationItem(
-                            _getNotificationIcon(notification['type'] ?? 'info'),
-                            _getNotificationColor(notification['type'] ?? 'info'),
-                            notification['message'] ?? 'No message',
-                            _formatTimeAgo(notification['timestamp'] ?? Timestamp.now()),
-                            isRead: notification['read'] ?? false,
-                          ),
-                          if (_notifications.indexOf(notification) < _notifications.length - 1 &&
-                              _notifications.indexOf(notification) < 1)
-                            const SizedBox(height: 12),
-                        ],
-                      );
-                    }),
-                ],
-              ),
-            ),
 
             const SizedBox(height: 100),
           ],
@@ -1097,8 +918,184 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  // --- Helper for Django delivery card ---
-  Widget _buildCargoDeliveryCard(Map<String, dynamic> delivery) {
+  Widget _buildActionCard(String title, IconData icon, Color color, String count, VoidCallback onTap) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.08),
+            blurRadius: 20,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: color.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Icon(icon, color: color, size: 24),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: color.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Text(
+                        count,
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: color,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF1E293B),
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  title == "Cargos" ? "Available for delivery" : "Track your cargo",
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: Color(0xFF64748B),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildReportItem(String title, IconData icon, Color color) {
+    return Container(
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withOpacity(0.2)),
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: () {
+            // Handle report item tap
+          },
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Row(
+              children: [
+                Icon(icon, color: color, size: 20),
+                const SizedBox(width: 8),
+                Text(
+                  title,
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: color,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCargoSection(String title, List<Map<String, dynamic>> deliveries, int count, bool isAvailable) {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 16),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Colors.white, Color(0xFFFAFBFF)],
+        ),
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.08),
+            blurRadius: 20,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                title,
+                style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFF1E293B),
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF3B82F6).withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  count.toString(),
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF3B82F6),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          ...deliveries.take(3).map((delivery) {
+            return Column(
+              children: [
+                _buildCargoDeliveryCard(delivery, isAvailable),
+                if (deliveries.indexOf(delivery) < deliveries.length - 1 && deliveries.indexOf(delivery) < 2)
+                  const SizedBox(height: 12),
+              ],
+            );
+          }),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCargoDeliveryCard(Map<String, dynamic> delivery, bool isAvailable) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -1114,7 +1111,7 @@ class _HomePageState extends State<HomePage> {
             children: [
               Expanded(
                 child: Text(
-                  "Container: ${delivery['containerNo'] ?? delivery['delivery_id'] ?? 'N/A'}",
+                  "Container: ${delivery['containerNo'] ?? 'N/A'}",
                   style: const TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.w600,
@@ -1146,7 +1143,7 @@ class _HomePageState extends State<HomePage> {
               const SizedBox(width: 4),
               Expanded(
                 child: Text(
-                  "${delivery['pickupLocation'] ?? delivery['pickup_location'] ?? 'N/A'} → ${delivery['destination'] ?? 'N/A'}",
+                  "${delivery['pickupLocation'] ?? 'Port Terminal'} → ${delivery['destination'] ?? 'Delivery Point'}",
                   style: const TextStyle(
                     fontSize: 14,
                     color: Color(0xFF64748B),
@@ -1161,236 +1158,98 @@ class _HomePageState extends State<HomePage> {
               const Icon(Icons.access_time_outlined, size: 16, color: Color(0xFF64748B)),
               const SizedBox(width: 4),
               Text(
-                "Assigned: ${delivery['createdAt'] != null ? _formatTimeAgo(Timestamp.fromDate(DateTime.parse(delivery['createdAt']))) : (delivery['confirmed_at'] != null ? _formatTimeAgo(Timestamp.fromDate(DateTime.parse(delivery['confirmed_at']))) : 'Recently')}",
+                delivery['created_at'] != null
+                    ? _formatTimeAgo(delivery['created_at'])
+                    : delivery['confirmed_at'] != null
+                        ? _formatTimeAgo(delivery['confirmed_at'])
+                        : 'Recently',
                 style: const TextStyle(
-                  fontSize: 12,
+                  fontSize: 14,
                   color: Color(0xFF64748B),
                 ),
               ),
             ],
           ),
           const SizedBox(height: 12),
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton(
-              onPressed: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => ContainerDetailsPage(
-                      containerNo: delivery['containerNo'] ?? delivery['delivery_id'] ?? '',
-                      time: delivery['createdAt'] ?? delivery['confirmed_at'] ?? '',
-                      pickup: delivery['pickupLocation'] ?? delivery['pickup_location'] ?? '',
-                      destination: delivery['destination'] ?? '',
-                      status: delivery['status'] ?? '',
-                      deliveryDocId: delivery['firestore_id'] ?? delivery['id'],
+          Row(
+            children: [
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: () {
+                    final status = delivery['status']?.toString().toLowerCase() ?? 'pending';
+                    
+                    if (status == 'in-progress' || status == 'in_transit') {
+                      // Navigate to live location for in-progress deliveries
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => LiveLocationPage(
+                            cargoData: delivery,
+                          ),
+                        ),
+                      );
+                    } else {
+                      // Navigate to container details for available/pending deliveries
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => ContainerDetailsPage(
+                            containerData: delivery,
+                            isAvailable: isAvailable,
+                          ),
+                        ),
+                      );
+                    }
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFF1F5F9),
+                    foregroundColor: const Color(0xFF475569),
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                  ),
+                  child: const Text(
+                    'View Details',
+                    style: TextStyle(fontSize: 14),
+                  ),
+                ),
+              ),
+              if (isAvailable) ...[
+                const SizedBox(width: 8),
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: () => _acceptCargoDelivery(delivery),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF10B981),
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                    ),
+                    child: const Text(
+                      'Accept',
+                      style: TextStyle(fontSize: 14),
                     ),
                   ),
-                );
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF3B82F6),
-                foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8),
                 ),
-              ),
-              child: const Text(
-                "View Details",
-                style: TextStyle(
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  TimeOfDay _parseTimeFromString(String timeString) {
-    try {
-      List<String> parts = timeString.split(':');
-      int hour = int.parse(parts[0]);
-      int minute = int.parse(parts[1]);
-      return TimeOfDay(hour: hour, minute: minute);
-    } catch (e) {
-      return const TimeOfDay(hour: 12, minute: 0);
-    }
-  }
-
-  Widget _buildStatusCard(String number, String label, Color color) {
-    return Container(
-      padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 12),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.2),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Column(
-        children: [
-          Text(
-            number,
-            style: const TextStyle(
-              fontSize: 24,
-              fontWeight: FontWeight.w800,
-              color: Colors.white,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            label,
-            style: const TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.w500,
-              color: Colors.white70,
-            ),
-          ),
-        ],
-      )
-    );
-  }
-
-  Widget _buildScheduleItem(String day, String time, String container, Color color) {
-    return Row(
-      children: [
-        Container(
-          width: 8,
-          height: 8,
-          decoration: BoxDecoration(
-            color: color,
-            shape: BoxShape.circle,
-          ),
-        ),
-        const SizedBox(width: 12),
-        Container(
-          width: 50,
-          padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
-          decoration: BoxDecoration(
-            color: const Color(0xFFF8FAFC),
-            borderRadius: BorderRadius.circular(6),
-            border: Border.all(color: const Color(0xFFE2E8F0)),
-          ),
-          child: Text(
-            day,
-            style: const TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-              color: Color(0xFF64748B),
-            ),
-            textAlign: TextAlign.center,
-          ),
-        ),
-        const SizedBox(width: 12),
-        Text(
-          time,
-          style: const TextStyle(
-            fontSize: 14,
-            fontWeight: FontWeight.w600,
-            color: Color(0xFF1E293B),
-          ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Text(
-            container,
-            style: const TextStyle(
-              fontSize: 14,
-              color: Color(0xFF64748B),
-            ),
-            overflow: TextOverflow.ellipsis,
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildSummaryItem(String number, String label, Color color) {
-    return Column(
-      children: [
-        Text(
-          number,
-          style: TextStyle(
-            fontSize: 24,
-            fontWeight: FontWeight.w800,
-            color: color,
-          ),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          label,
-          style: const TextStyle(
-            fontSize: 10,
-            fontWeight: FontWeight.w600,
-            color: Color(0xFF64748B),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildNotificationItem(IconData icon, Color color, String message, String time, {bool isRead = false}) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Container(
-          padding: const EdgeInsets.all(8),
-          decoration: BoxDecoration(
-            color: color.withOpacity(0.1),
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Icon(
-            icon,
-            color: color,
-            size: 16,
-          ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                message,
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: isRead ? FontWeight.w500 : FontWeight.w700,
-                  color: const Color(0xFF1E293B),
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                time,
-                style: const TextStyle(
-                  fontSize: 12,
-                  color: Color(0xFF64748B),
-                ),
-              ),
+              ],
             ],
           ),
-        ),
-        if (!isRead)
-          Container(
-            width: 8,
-            height: 8,
-            decoration: const BoxDecoration(
-              color: Color(0xFFEF4444),
-              shape: BoxShape.circle,
-            ),
-          ),
-      ],
+        ],
+      ),
     );
   }
 
-  Widget _buildBottomNavigation(BuildContext context, int currentIndex) {
+    Widget _buildBottomNavigation(BuildContext context, int currentIndex) {
     return Container(
       decoration: BoxDecoration(
         color: Colors.white,
         boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.1),
-            blurRadius: 20,
-            offset: const Offset(0, -4),
-          ),
+          BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 20, offset: const Offset(0, -4)),
         ],
       ),
       child: BottomNavigationBar(
@@ -1404,50 +1263,63 @@ class _HomePageState extends State<HomePage> {
         onTap: (index) {
           switch (index) {
             case 0:
+              Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => const HomePage()));
               break;
             case 1:
-              Navigator.pushReplacement(
-                context,
-                MaterialPageRoute(builder: (context) => const SchedulePage()),
-              );
+              Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => const SchedulePage()));
               break;
             case 2:
-              Navigator.pushReplacement(
-                context,
-                MaterialPageRoute(builder: (context) => const LiveMapPage()),
-              );
+              Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => const LiveMapPage()));
               break;
             case 3:
-              Navigator.pushReplacement(
-                context,
-                MaterialPageRoute(builder: (context) => const SettingsPage()),
-              );
+              Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => const SettingsPage()));
               break;
           }
         },
         items: const [
-          BottomNavigationBarItem(
-            icon: Icon(Icons.home_outlined),
-            activeIcon: Icon(Icons.home),
-            label: 'Home',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.schedule_outlined),
-            activeIcon: Icon(Icons.schedule),
-            label: 'Schedule',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.map_outlined),
-            activeIcon: Icon(Icons.map),
-            label: 'Live Map',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.settings_outlined),
-            activeIcon: Icon(Icons.settings),
-            label: 'Settings',
-          ),
+          BottomNavigationBarItem(icon: Icon(Icons.home_outlined), activeIcon: Icon(Icons.home), label: 'Home'),
+          BottomNavigationBarItem(icon: Icon(Icons.schedule_outlined), activeIcon: Icon(Icons.schedule), label: 'Schedule'),
+          BottomNavigationBarItem(icon: Icon(Icons.map_outlined), activeIcon: Icon(Icons.map), label: 'Live Map'),
+          BottomNavigationBarItem(icon: Icon(Icons.settings_outlined), activeIcon: Icon(Icons.settings), label: 'Settings'),
         ],
-      )
+      ),
     );
+  }
+
+}
+
+// AutoRefreshMixin for real-time updates
+mixin AutoRefreshMixin<T extends StatefulWidget> on State<T> {
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  List<StreamSubscription> _subscriptions = [];
+
+  @override
+  void dispose() {
+    for (var subscription in _subscriptions) {
+      subscription.cancel();
+    }
+    super.dispose();
+  }
+
+  void addSubscription(StreamSubscription subscription) {
+    _subscriptions.add(subscription);
+  }
+
+  void setupCargoListener(VoidCallback onUpdate) {
+    final subscription = _firestore.collection('Cargo').snapshots().listen((_) {
+      if (mounted) onUpdate();
+    });
+    addSubscription(subscription);
+  }
+
+  void setupDeliveryListener(String userId, VoidCallback onUpdate) {
+    final subscription = _firestore
+        .collection('CargoDelivery')
+        .where('courier_id', isEqualTo: userId)
+        .snapshots()
+        .listen((_) {
+      if (mounted) onUpdate();
+    });
+    addSubscription(subscription);
   }
 }
