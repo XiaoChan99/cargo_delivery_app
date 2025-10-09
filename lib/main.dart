@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'firebase_options.dart';
 import 'loading_screen.dart';
 import 'login_page.dart';
@@ -105,7 +106,15 @@ class MainApp extends StatelessWidget {
             cargoData: args['cargoData'],
           );
         },
-        '/analytics': (context) => const AnalyticsPage(),
+        '/analytics': (context) {
+          final user = FirebaseAuth.instance.currentUser;
+          if (user != null) {
+            return AnalyticsPage(userId: user.uid);
+          } else {
+            // Fallback to login page if user is not authenticated
+            return const LoginPage();
+          }
+        },
         '/info': (context) => const InfoPage(),
         '/change_password': (context) => const ChangePasswordPage(),
         '/terms_privacy': (context) => const TermsPrivacyPage(),

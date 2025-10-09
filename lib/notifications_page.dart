@@ -434,7 +434,7 @@ Future<void> _generateCargoNotifications() async {
 
   Future<void> _deleteNotification(String notificationId) async {
     try {
-      await _firestore.collection('notifications').doc(notificationId).delete();
+      await _firestore.collection('Notifications').doc(notificationId).delete();
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Error deleting notification: $e')),

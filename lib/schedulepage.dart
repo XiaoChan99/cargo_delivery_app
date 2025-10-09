@@ -25,7 +25,6 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
   String _licenseNumber = '';
   bool _isLoading = true;
 
-  // Cargo Lists
   List<Map<String, dynamic>> _availableCargos = [];
   List<Map<String, dynamic>> _inProgressDeliveries = [];
 
@@ -35,6 +34,22 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
     _loadUserData();
     _loadCargoData();
     _setupRealTimeListeners();
+  }
+
+  Future<void> _loadUserData() async {
+    try {
+      final user = _auth.currentUser;
+      if (user == null) return;
+
+      DocumentSnapshot userDoc = await _firestore.collection('Couriers').doc(user.uid).get();
+      if (userDoc.exists) {
+        var userData = userDoc.data() as Map<String, dynamic>;
+        String role = userData['role']?.toString() ?? 'courier';
+        await _processUserData(userData, role);
+      }
+    } catch (e) {
+      print('Error loading user data: $e');
+    }
   }
 
   void _setupRealTimeListeners() {
@@ -61,13 +76,11 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
 
   Future<void> _loadAvailableCargos() async {
     try {
-      // Get all cargo documents
       QuerySnapshot cargoSnapshot = await _firestore
           .collection('Cargo')
           .orderBy('created_at', descending: true)
           .get();
 
-      // Get all cargo IDs that have delivery records
       QuerySnapshot deliverySnapshot = await _firestore
           .collection('CargoDelivery')
           .get();
@@ -83,9 +96,10 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
       List<Map<String, dynamic>> availableCargos = [];
       for (var doc in cargoSnapshot.docs) {
         var cargoData = doc.data() as Map<String, dynamic>;
-        
-        // Only include cargos that are not assigned to any delivery
-        if (!assignedCargoIds.contains(doc.id)) {
+        final status = cargoData['status']?.toString().toLowerCase() ?? 'pending';
+
+        // Only include cargos that are not assigned to any delivery and not delayed
+        if (!assignedCargoIds.contains(doc.id) && status != 'delayed') {
           Map<String, dynamic> combinedData = {
             'cargo_id': doc.id,
             'containerNo': 'CONT-${cargoData['item_number']?.toString() ?? 'N/A'}',
@@ -130,9 +144,8 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
         var deliveryData = doc.data() as Map<String, dynamic>;
         String status = deliveryData['status']?.toString().toLowerCase() ?? '';
         
-        // Only include in-progress, in_transit, or assigned statuses
+        // Only include in-progress, in_transit, assigned, or delayed statuses
         if (status == 'in-progress' || status == 'in_transit' || status == 'assigned' || status == 'delayed') {
-          // Get cargo details using cargo_id foreign key
           try {
             DocumentSnapshot cargoDoc = await _firestore
                 .collection('Cargo')
@@ -176,24 +189,6 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
       print('Error loading in-progress deliveries: $e');
     }
   }
-
-  Future<void> _loadUserData() async {
-    try {
-      final user = _auth.currentUser;
-      if (user != null) {
-        final courierDoc = await _firestore.collection('Couriers').doc(user.uid).get();
-        
-        if (courierDoc.exists) {
-          final data = courierDoc.data() as Map<String, dynamic>;
-          await _processUserData(data, 'courier');
-          return;
-        }
-      }
-    } catch (e) {
-      print('Error loading user data: $e');
-    }
-  }
-
   Future<void> _processUserData(Map<String, dynamic> data, String role) async {
     Uint8List? decodedImage;
     
@@ -210,6 +205,30 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
       _cachedAvatarImage = decodedImage;
       _licenseNumber = data['license_number'] ?? 'N/A';
     });
+  }
+
+  IconData _getStatusIcon(String status) {
+    switch (status.toLowerCase()) {
+      case 'scheduled':
+        return Icons.schedule_rounded;
+      case 'in progress':
+      case 'in-progress':
+      case 'in_transit':
+        return Icons.local_shipping_rounded;
+      case 'delayed':
+        return Icons.warning_rounded;
+      case 'delivered':
+      case 'confirmed':
+        return Icons.check_circle_rounded;
+      case 'pending':
+        return Icons.pending_rounded;
+      case 'assigned':
+        return Icons.assignment_turned_in_rounded;
+      case 'cancelled':
+        return Icons.cancel_rounded;
+      default:
+        return Icons.info_rounded;
+    }
   }
 
   Color _getStatusColor(String status) {
@@ -269,7 +288,6 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
     final status = cargoData['status']?.toString().toLowerCase() ?? 'pending';
     
     if (status == 'in-progress' || status == 'in_transit') {
-      // Navigate to live location for in-progress deliveries
       Navigator.push(
         context,
         MaterialPageRoute(
@@ -279,7 +297,6 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
         ),
       );
     } else if (status == 'delayed') {
-      // Navigate to status update for delayed deliveries
       Navigator.push(
         context,
         MaterialPageRoute(
@@ -289,7 +306,6 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
         ),
       );
     } else {
-      // Navigate to container details for available/pending deliveries
       Navigator.push(
         context,
         MaterialPageRoute(
@@ -379,7 +395,6 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
 
                   const SizedBox(height: 16),
 
-                  // Available Cargos Section
                   if (_availableCargos.isNotEmpty)
                     _buildCargoSection(
                       "Available Cargos",
@@ -389,7 +404,6 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
 
                   const SizedBox(height: 16),
 
-                  // In Progress Deliveries Section
                   if (_inProgressDeliveries.isNotEmpty)
                     _buildCargoSection(
                       "Your Active Deliveries",
@@ -397,7 +411,6 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
                       false,
                     ),
 
-                  // Empty State
                   if (_availableCargos.isEmpty && _inProgressDeliveries.isEmpty)
                     _buildNoCargo(),
 
@@ -495,19 +508,30 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
                 time,
                 style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Color(0xFF1E293B)),
               ),
-              Row(
-                children: [
-                  Container(width: 8, height: 8, decoration: BoxDecoration(color: _getStatusColor(status), shape: BoxShape.circle)),
-                  const SizedBox(width: 6),
-                  Text(
-                    status.toUpperCase(),
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w500,
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: _getStatusColor(status).withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      _getStatusIcon(status),
+                      size: 14,
                       color: _getStatusColor(status),
                     ),
-                  ),
-                ],
+                    const SizedBox(width: 6),
+                    Text(
+                      status.toUpperCase(),
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: _getStatusColor(status),
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ],
           ),
@@ -582,12 +606,16 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
     );
   }
 
-  Widget _buildBottomNavigation(BuildContext context, int currentIndex) {
+    Widget _buildBottomNavigation(BuildContext context, int currentIndex) {
     return Container(
       decoration: BoxDecoration(
         color: Colors.white,
         boxShadow: [
-          BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 20, offset: const Offset(0, -4)),
+          BoxShadow(
+            color: Colors.black.withOpacity(0.1),
+            blurRadius: 20,
+            offset: const Offset(0, -4),
+          ),
         ],
       ),
       child: BottomNavigationBar(
@@ -601,23 +629,49 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
         onTap: (index) {
           switch (index) {
             case 0:
-              Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => const HomePage()));
+              Navigator.pushReplacement(
+                context,
+                MaterialPageRoute(builder: (context) => const HomePage()),
+              );
               break;
             case 1:
+              Navigator.pushReplacement(
+                context,
+                MaterialPageRoute(builder: (context) => const SchedulePage()),
+              );
               break;
             case 2:
-              Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => const LiveMapPage()));
+              Navigator.pushReplacement(
+                context,
+                MaterialPageRoute(builder: (context) => const LiveMapPage()),
+              );
               break;
             case 3:
-              Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => const SettingsPage()));
+              // Already on Settings page
               break;
           }
         },
         items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.home_outlined), activeIcon: Icon(Icons.home), label: 'Home'),
-          BottomNavigationBarItem(icon: Icon(Icons.schedule_outlined), activeIcon: Icon(Icons.schedule), label: 'Schedule'),
-          BottomNavigationBarItem(icon: Icon(Icons.map_outlined), activeIcon: Icon(Icons.map), label: 'Live Map'),
-          BottomNavigationBarItem(icon: Icon(Icons.settings_outlined), activeIcon: Icon(Icons.settings), label: 'Settings'),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.home_outlined),
+            activeIcon: Icon(Icons.home),
+            label: 'Home',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.schedule_outlined),
+            activeIcon: Icon(Icons.schedule),
+            label: 'Schedule',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.map_outlined),
+            activeIcon: Icon(Icons.map),
+            label: 'Live Map',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.settings_outlined),
+            activeIcon: Icon(Icons.settings),
+            label: 'Settings',
+          ),
         ],
       ),
     );

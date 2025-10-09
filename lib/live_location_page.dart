@@ -4,6 +4,7 @@ import 'package:latlong2/latlong.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:intl/intl.dart';
 import 'livemap_page.dart';
 
 class LiveLocationPage extends StatefulWidget {
@@ -58,6 +59,7 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
   Map<String, dynamic>? _cargoData;
   Map<String, dynamic>? _deliveryData;
   bool _isLoading = true;
+  DateTime? _selectedDelayTime;
 
   @override
   void initState() {
@@ -148,8 +150,50 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
     return _cargoData?['destination'] ?? widget.destination;
   }
 
+  Color _getStatusColor(String status) {
+    switch (status.toLowerCase()) {
+      case 'delivered':
+        return const Color(0xFF10B981);
+      case 'pending':
+      case 'scheduled':
+        return const Color(0xFFF59E0B);
+      case 'delayed':
+        return const Color(0xFFEF4444);
+      case 'in-progress':
+      case 'in_transit':
+      case 'assigned':
+        return const Color(0xFF3B82F6);
+      default:
+        return const Color(0xFF3B82F6);
+    }
+  }
+
+  IconData _getStatusIcon(String status) {
+    switch (status.toLowerCase()) {
+      case 'delivered':
+        return Icons.check_circle_rounded;
+      case 'pending':
+      case 'scheduled':
+        return Icons.schedule_rounded;
+      case 'delayed':
+        return Icons.watch_later_rounded;
+      case 'in-progress':
+      case 'in_transit':
+      case 'assigned':
+        return Icons.local_shipping_rounded;
+      default:
+        return Icons.help_rounded;
+    }
+  }
+
   Future<void> _confirmDelivery() async {
     try {
+      final user = _auth.currentUser;
+      if (user == null) {
+        _showErrorModal('User not logged in');
+        return;
+      }
+
       // Update CargoDelivery status
       QuerySnapshot deliveryQuery = await _firestore
           .collection('CargoDelivery')
@@ -177,18 +221,15 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
       }
 
       // Create delivery completed notification
-      final user = _auth.currentUser;
-      if (user != null) {
-        await _firestore.collection('notifications').add({
-          'userId': user.uid,
-          'type': 'delivery_completed',
-          'message': 'Delivery completed for Container $_containerNo',
-          'timestamp': Timestamp.now(),
-          'read': false,
-          'cargoId': _cargoId,
-          'containerNo': _containerNo,
-        });
-      }
+      await _firestore.collection('Notifications').add({
+        'userId': user.uid,
+        'type': 'delivery_completed',
+        'message': 'Delivery completed for Container $_containerNo',
+        'timestamp': Timestamp.now(),
+        'read': false,
+        'cargoId': _cargoId,
+        'containerNo': _containerNo,
+      });
 
       _showSuccessModal('Delivery marked as completed successfully!');
       
@@ -202,8 +243,14 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
     }
   }
 
-  Future<void> _reportDelay(String reason, String estimatedTime) async {
+  Future<void> _reportDelay(String reason, DateTime estimatedTime) async {
     try {
+      final user = _auth.currentUser;
+      if (user == null) {
+        _showErrorModal('User not logged in');
+        return;
+      }
+
       // Update CargoDelivery status
       QuerySnapshot deliveryQuery = await _firestore
           .collection('CargoDelivery')
@@ -214,8 +261,9 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
       if (deliveryQuery.docs.isNotEmpty) {
         await deliveryQuery.docs.first.reference.update({
           'status': 'delayed',
-          'remarks': 'Delay reported: $reason. Estimated new arrival: $estimatedTime',
+          'remarks': 'Delay reported: $reason. Estimated new arrival: ${DateFormat('MMM dd, yyyy - HH:mm').format(estimatedTime)}',
           'updated_at': Timestamp.now(),
+          'estimated_arrival': Timestamp.fromDate(estimatedTime),
         });
       }
 
@@ -227,22 +275,20 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
             .update({
               'status': 'delayed',
               'updated_at': Timestamp.now(),
+              'estimated_arrival': Timestamp.fromDate(estimatedTime),
             });
       }
 
       // Create delay notification
-      final user = _auth.currentUser;
-      if (user != null) {
-        await _firestore.collection('notifications').add({
-          'userId': user.uid,
-          'type': 'delivery_delayed',
-          'message': 'Delivery delayed for Container $_containerNo: $reason',
-          'timestamp': Timestamp.now(),
-          'read': false,
-          'cargoId': _cargoId,
-          'containerNo': _containerNo,
-        });
-      }
+      await _firestore.collection('Notifications').add({
+        'userId': user.uid,
+        'type': 'delivery_delayed',
+        'message': 'Delivery delayed for Container $_containerNo: $reason',
+        'timestamp': Timestamp.now(),
+        'read': false,
+        'cargoId': _cargoId,
+        'containerNo': _containerNo,
+      });
 
       _showSuccessModal('Delay reported successfully!');
     } catch (e) {
@@ -251,42 +297,189 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
     }
   }
 
-  Color _getStatusColor(String status) {
-    switch (status.toLowerCase()) {
-      case 'delivered':
-        return const Color(0xFF10B981);
-      case 'pending':
-      case 'scheduled':
-        return const Color(0xFFF59E0B);
-      case 'delayed':
-        return const Color(0xFFEF4444);
-      case 'in-progress':
-      case 'in_transit':
-      case 'assigned':
-        return const Color(0xFF3B82F6);
-      default:
-        return const Color(0xFF3B82F6);
-    }
+  void _showSuccessModal(String message) {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return Dialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          child: Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Colors.white, Color(0xFFFAFBFF)],
+              ),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF10B981).withOpacity(0.1),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.check_circle_rounded,
+                    color: Color(0xFF10B981),
+                    size: 40,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  "Success!",
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF1E293B),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  message,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    color: Color(0xFF64748B),
+                  ),
+                ),
+                const SizedBox(height: 24),
+                ElevatedButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF10B981),
+                    foregroundColor: Colors.white,
+                    minimumSize: const Size(120, 48),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    elevation: 0,
+                  ),
+                  child: const Text(
+                    'OK',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
-  String _formatDate(Timestamp timestamp) {
-    final date = timestamp.toDate();
-    final months = [
-      'January', 'February', 'March', 'April', 'May', 'June',
-      'July', 'August', 'September', 'October', 'November', 'December'
-    ];
-    final weekdays = [
-      'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'
-    ];
-    return '${weekdays[date.weekday - 1]} ${months[date.month - 1]} ${date.day}, ${date.year}';
+  void _showErrorModal(String message) {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return Dialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          child: Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Colors.white, Color(0xFFFAFBFF)],
+              ),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFEF4444).withOpacity(0.1),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.error_outline_rounded,
+                    color: Color(0xFFEF4444),
+                    size: 40,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  "Error",
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF1E293B),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  message,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    color: Color(0xFF64748B),
+                  ),
+                ),
+                const SizedBox(height: 24),
+                ElevatedButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFEF4444),
+                    foregroundColor: Colors.white,
+                    minimumSize: const Size(120, 48),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    elevation: 0,
+                  ),
+                  child: const Text(
+                    'OK',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
-      return const Scaffold(
+      return Scaffold(
+        backgroundColor: const Color(0xFFF8FAFC),
         body: Center(
-          child: CircularProgressIndicator(),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF3B82F6).withOpacity(0.1),
+                  shape: BoxShape.circle,
+                ),
+                child: const CircularProgressIndicator(
+                  valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF3B82F6)),
+                ),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'Loading delivery details...',
+                style: TextStyle(
+                  fontSize: 16,
+                  color: Color(0xFF64748B),
+                ),
+              ),
+            ],
+          ),
         ),
       );
     }
@@ -316,7 +509,7 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
         builder: (context, constraints) {
           bool isTablet = constraints.maxWidth > 600;
           double horizontalPadding = isTablet ? 32.0 : 16.0;
-          double mapHeight = isTablet ? 250.0 : 150.0;
+          double mapHeight = isTablet ? 250.0 : 180.0;
 
           return SingleChildScrollView(
             child: Column(
@@ -351,13 +544,19 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
                             borderRadius: BorderRadius.circular(8),
                           ),
                           child: const Icon(
-                            Icons.arrow_back,
+                            Icons.arrow_back_rounded,
                             color: Colors.white,
                             size: 20,
                           ),
                         ),
                       ),
                       const SizedBox(width: 16),
+                      const Icon(
+                        Icons.location_on_rounded,
+                        color: Colors.white,
+                        size: 24,
+                      ),
+                      const SizedBox(width: 12),
                       const Text(
                         "Live Location",
                         style: TextStyle(
@@ -395,8 +594,13 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
+                          const Icon(
+                            Icons.map_rounded,
+                            color: Color(0xFF3B82F6),
+                            size: 20,
+                          ),
+                          const SizedBox(width: 8),
                           const Text(
                             "Live Location",
                             style: TextStyle(
@@ -405,6 +609,13 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
                               color: Color(0xFF1E293B),
                             ),
                           ),
+                          const Spacer(),
+                          const Icon(
+                            Icons.access_time_rounded,
+                            color: Color(0xFF64748B),
+                            size: 16,
+                          ),
+                          const SizedBox(width: 4),
                           const Text(
                             "ETA: 11:15 AM",
                             style: TextStyle(
@@ -422,10 +633,13 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
                           borderRadius: BorderRadius.circular(12),
                           border: Border.all(color: const Color(0xFFE2E8F0)),
                         ),
-                        child: LiveMapWidget(
-                          deliveryRoute: deliveryRoute,
-                          ports: ports,
-                          truckLocation: const LatLng(14.3000, 121.0800), // Current truck position
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(12),
+                          child: LiveMapWidget(
+                            deliveryRoute: deliveryRoute,
+                            ports: ports,
+                            truckLocation: const LatLng(14.3000, 121.0800), // Current truck position
+                          ),
                         ),
                       ),
                     ],
@@ -456,124 +670,77 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text(
-                        "Container Delivery Details",
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w700,
-                          color: Color(0xFF1E293B),
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      _buildDetailRow(
-                        _deliveryData?['confirmed_at'] != null 
-                            ? _formatDate(_deliveryData!['confirmed_at'] as Timestamp)
-                            : "Schedule Date", 
-                        ""
-                      ),
-                      _buildDetailRow(widget.time, _containerNo),
-                      _buildDetailRow(_pickup, ""),
-                      _buildDetailRow(_destination, ""),
-                      _buildDetailRow("Driver Assigned: ${_deliveryData?['courier_id'] ?? 'Assigned Driver'}", ""),
-                      const SizedBox(height: 8),
                       Row(
                         children: [
+                          const Icon(
+                            Icons.local_shipping_rounded,
+                            color: Color(0xFF3B82F6),
+                            size: 20,
+                          ),
+                          const SizedBox(width: 8),
                           const Text(
-                            "Status: ",
+                            "Delivery Details",
                             style: TextStyle(
-                              fontSize: 14,
-                              color: Color(0xFF64748B),
-                            ),
-                          ),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: _getStatusColor(_status).withOpacity(0.1),
-                              borderRadius: BorderRadius.circular(6),
-                            ),
-                            child: Text(
-                              _status.toUpperCase(),
-                              style: TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.w600,
-                                color: _getStatusColor(_status),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-
-                const SizedBox(height: 16),
-
-                // Container Info
-                Container(
-                  margin: EdgeInsets.symmetric(horizontal: horizontalPadding),
-                  padding: const EdgeInsets.all(20),
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: [Colors.white, Color(0xFFFAFBFF)],
-                    ),
-                    borderRadius: BorderRadius.circular(16),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withOpacity(0.08),
-                        blurRadius: 20,
-                        offset: const Offset(0, 4),
-                      ),
-                    ],
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        "Cargo Information",
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w700,
-                          color: Color(0xFF1E293B),
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      _buildDetailRow("Container Type: Standard Container", ""),
-                      _buildDetailRow("Contents: ${_cargoData?['description'] ?? 'Electronics'}", ""),
-                      _buildDetailRow("Weight: ${_cargoData?['weight'] ?? '3,200'}kg", ""),
-                      _buildDetailRow("HS Code: ${_cargoData?['hs_code'] ?? 'N/A'}", ""),
-                      _buildDetailRow("Value: \$${_cargoData?['value'] ?? '0'}", ""),
-                      _buildDetailRow("Quantity: ${_cargoData?['quantity'] ?? '1'}", ""),
-                      _buildDetailRow("Item Number: ${_cargoData?['item_number'] ?? 'N/A'}", ""),
-                      if (_cargoData?['additional_info'] != null && _cargoData!['additional_info'].toString().isNotEmpty)
-                        _buildDetailRow("Additional Info: ${_cargoData!['additional_info']}", ""),
-                      Row(
-                        children: [
-                          const Text(
-                            "Hazardous: ",
-                            style: TextStyle(
-                              fontSize: 14,
-                              color: Color(0xFF64748B),
-                            ),
-                          ),
-                          Text(
-                            "No",
-                            style: const TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w600,
+                              fontSize: 16,
+                              fontWeight: FontWeight.w700,
                               color: Color(0xFF1E293B),
                             ),
                           ),
                         ],
                       ),
+                      const SizedBox(height: 16),
+                      _buildDetailRow(
+                        Icons.calendar_today_rounded,
+                        _deliveryData?['confirmed_at'] != null 
+                            ? _formatDate(_deliveryData!['confirmed_at'] as Timestamp)
+                            : "Schedule Date", 
+                        ""
+                      ),
+                      _buildDetailRow(Icons.access_time_rounded, widget.time, _containerNo),
+                      _buildDetailRow(Icons.place_rounded, _pickup, ""),
+                      _buildDetailRow(Icons.flag_rounded, _destination, ""),
+                      _buildDetailRow(Icons.person_rounded, "Driver Assigned: ${_deliveryData?['courier_id'] ?? 'Assigned Driver'}", ""),
+                      const SizedBox(height: 12),
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: _getStatusColor(_status).withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: _getStatusColor(_status).withOpacity(0.3)),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(
+                              _getStatusIcon(_status),
+                              color: _getStatusColor(_status),
+                              size: 16,
+                            ),
+                            const SizedBox(width: 8),
+                            const Text(
+                              "Status: ",
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: Color(0xFF64748B),
+                              ),
+                            ),
+                            Text(
+                              _status.toUpperCase(),
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w600,
+                                color: _getStatusColor(_status),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
                     ],
                   ),
                 ),
 
                 const SizedBox(height: 16),
 
-                // Attachment
+                // Cargo Information
                 Container(
                   margin: EdgeInsets.symmetric(horizontal: horizontalPadding),
                   padding: const EdgeInsets.all(20),
@@ -595,39 +762,35 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text(
-                        "Attachment",
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w700,
-                          color: Color(0xFF1E293B),
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      const Text(
-                        "Delivery Photo Placeholder, Bill of Lading, Delivery Receipt",
-                        style: TextStyle(
-                          fontSize: 14,
-                          color: Color(0xFF64748B),
-                        ),
-                        textAlign: TextAlign.center,
-                      ),
-                      const SizedBox(height: 16),
-                      Container(
-                        height: 80,
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFF1F5F9),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: const Color(0xFFE2E8F0)),
-                        ),
-                        child: const Center(
-                          child: Icon(
-                            Icons.add,
-                            size: 32,
-                            color: Color(0xFF64748B),
+                      Row(
+                        children: [
+                          const Icon(
+                            Icons.inventory_2_rounded,
+                            color: Color(0xFF3B82F6),
+                            size: 20,
                           ),
-                        ),
+                          const SizedBox(width: 8),
+                          const Text(
+                            "Cargo Information",
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w700,
+                              color: Color(0xFF1E293B),
+                            ),
+                          ),
+                        ],
                       ),
+                      const SizedBox(height: 16),
+                      _buildDetailRow(Icons.type_specimen_rounded, "Container Type: Standard Container", ""),
+                      _buildDetailRow(Icons.description_rounded, "Contents: ${_cargoData?['description'] ?? 'Electronics'}", ""),
+                      _buildDetailRow(Icons.fitness_center_rounded, "Weight: ${_cargoData?['weight'] ?? '3,200'}kg", ""),
+                      _buildDetailRow(Icons.code_rounded, "HS Code: ${_cargoData?['hs_code'] ?? 'N/A'}", ""),
+                      _buildDetailRow(Icons.attach_money_rounded, "Value: \$${_cargoData?['value'] ?? '0'}", ""),
+                      _buildDetailRow(Icons.format_list_numbered_rounded, "Quantity: ${_cargoData?['quantity'] ?? '1'}", ""),
+                      _buildDetailRow(Icons.numbers_rounded, "Item Number: ${_cargoData?['item_number'] ?? 'N/A'}", ""),
+                      if (_cargoData?['additional_info'] != null && _cargoData!['additional_info'].toString().isNotEmpty)
+                        _buildDetailRow(Icons.info_rounded, "Additional Info: ${_cargoData!['additional_info']}", ""),
+                      _buildDetailRow(Icons.warning_rounded, "Hazardous: No", ""),
                     ],
                   ),
                 ),
@@ -654,31 +817,31 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
                       ),
                 ),
 
-                const SizedBox(height: 100),
+                const SizedBox(height: 32),
               ],
             ),
           );
         },
       ),
-      bottomNavigationBar: _buildBottomNavigation(context, 1),
     );
   }
 
   List<Widget> _buildActionButtons(BuildContext context, bool isTablet) {
     return [
       Expanded(
-        child: OutlinedButton(
+        child: OutlinedButton.icon(
           style: OutlinedButton.styleFrom(
             foregroundColor: const Color(0xFF3B82F6),
             side: const BorderSide(color: Color(0xFF3B82F6)),
             shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(8),
+              borderRadius: BorderRadius.circular(12),
             ),
             padding: EdgeInsets.symmetric(vertical: isTablet ? 16 : 12),
           ),
           onPressed: () => _showQRScanner(context),
-          child: Text(
-            "Scan",
+          icon: const Icon(Icons.qr_code_scanner_rounded, size: 20),
+          label: Text(
+            "Scan QR",
             style: TextStyle(
               fontSize: isTablet ? 16 : 14,
               fontWeight: FontWeight.w600,
@@ -688,17 +851,18 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
       ),
       SizedBox(width: isTablet ? 12 : 8),
       Expanded(
-        child: OutlinedButton(
+        child: OutlinedButton.icon(
           style: OutlinedButton.styleFrom(
             foregroundColor: const Color(0xFFF59E0B),
             side: const BorderSide(color: Color(0xFFF59E0B)),
             shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(8),
+              borderRadius: BorderRadius.circular(12),
             ),
             padding: EdgeInsets.symmetric(vertical: isTablet ? 16 : 12),
           ),
           onPressed: () => _showReportDelayModal(context),
-          child: Text(
+          icon: const Icon(Icons.report_problem_rounded, size: 20),
+          label: Text(
             "Report Delay",
             style: TextStyle(
               fontSize: isTablet ? 16 : 14,
@@ -709,19 +873,20 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
       ),
       SizedBox(width: isTablet ? 12 : 8),
       Expanded(
-        child: ElevatedButton(
+        child: ElevatedButton.icon(
           style: ElevatedButton.styleFrom(
             backgroundColor: const Color(0xFF10B981),
             foregroundColor: Colors.white,
             elevation: 0,
             shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(8),
+              borderRadius: BorderRadius.circular(12),
             ),
             padding: EdgeInsets.symmetric(vertical: isTablet ? 16 : 12),
           ),
           onPressed: () => _showDeliveryConfirmationModal(context),
-          child: Text(
-            "Mark as Delivered",
+          icon: const Icon(Icons.check_circle_rounded, size: 20),
+          label: Text(
+            "Mark Delivered",
             style: TextStyle(
               fontSize: isTablet ? 16 : 14,
               fontWeight: FontWeight.w600,
@@ -732,12 +897,18 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
     ];
   }
 
-  Widget _buildDetailRow(String text, String value) {
+  Widget _buildDetailRow(IconData icon, String text, String value) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.only(bottom: 12),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          Icon(
+            icon,
+            size: 16,
+            color: const Color(0xFF64748B),
+          ),
+          const SizedBox(width: 8),
           Expanded(
             child: Text(
               text,
@@ -761,66 +932,16 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
     );
   }
 
-  Widget _buildBottomNavigation(BuildContext context, int currentIndex) {
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.1),
-            blurRadius: 20,
-            offset: const Offset(0, -4),
-          ),
-        ],
-      ),
-      child: BottomNavigationBar(
-        currentIndex: currentIndex,
-        type: BottomNavigationBarType.fixed,
-        backgroundColor: Colors.white,
-        selectedItemColor: const Color(0xFF3B82F6),
-        unselectedItemColor: const Color(0xFF64748B),
-        selectedFontSize: 12,
-        unselectedFontSize: 12,
-        onTap: (index) {
-          switch (index) {
-            case 0:
-              Navigator.pushReplacementNamed(context, '/home');
-              break;
-            case 1:
-              // Already on schedule page
-              break;
-            case 2:
-              Navigator.pushReplacementNamed(context, '/livemap');
-              break;
-            case 3:
-              Navigator.pushReplacementNamed(context, '/settings');
-              break;
-          }
-        },
-        items: const [
-          BottomNavigationBarItem(
-            icon: Icon(Icons.home_outlined),
-            activeIcon: Icon(Icons.home),
-            label: 'Home',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.schedule_outlined),
-            activeIcon: Icon(Icons.schedule),
-            label: 'Schedule',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.map_outlined),
-            activeIcon: Icon(Icons.map),
-            label: 'Live Map',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.settings_outlined),
-            activeIcon: Icon(Icons.settings),
-            label: 'Settings',
-          ),
-        ],
-      ),
-    );
+  String _formatDate(Timestamp timestamp) {
+    final date = timestamp.toDate();
+    final months = [
+      'January', 'February', 'March', 'April', 'May', 'June',
+      'July', 'August', 'September', 'October', 'November', 'December'
+    ];
+    final weekdays = [
+      'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'
+    ];
+    return '${weekdays[date.weekday - 1]} ${months[date.month - 1]} ${date.day}, ${date.year}';
   }
 
   void _showQRScanner(BuildContext context) {
@@ -841,25 +962,134 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
     showDialog(
       context: context,
       builder: (BuildContext context) {
-        return AlertDialog(
-          title: const Text('Scan Result'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('Container: $_containerNo'),
-              const SizedBox(height: 8),
-              Text('Scanned Data: $scannedData'),
-              const SizedBox(height: 16),
-              const Text('Scan verified successfully!'),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('OK'),
+        return Dialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          child: Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Colors.white, Color(0xFFFAFBFF)],
+              ),
+              borderRadius: BorderRadius.circular(20),
             ),
-          ],
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF10B981).withOpacity(0.1),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.qr_code_scanner_rounded,
+                    color: Color(0xFF10B981),
+                    size: 40,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  "Scan Successful!",
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF1E293B),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF8FAFC),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFFE2E8F0)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(
+                            Icons.local_shipping_rounded,
+                            color: Color(0xFF64748B),
+                            size: 16,
+                          ),
+                          const SizedBox(width: 8),
+                          const Text(
+                            "Container:",
+                            style: TextStyle(
+                              fontSize: 14,
+                              color: Color(0xFF64748B),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        _containerNo,
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF1E293B),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          const Icon(
+                            Icons.qr_code_rounded,
+                            color: Color(0xFF64748B),
+                            size: 16,
+                          ),
+                          const SizedBox(width: 8),
+                          const Text(
+                            "Scanned Data:",
+                            style: TextStyle(
+                              fontSize: 14,
+                              color: Color(0xFF64748B),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        scannedData,
+                        style: const TextStyle(
+                          fontSize: 14,
+                          color: Color(0xFF1E293B),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  'Scan verified successfully!',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: Color(0xFF64748B),
+                  ),
+                ),
+                const SizedBox(height: 24),
+                ElevatedButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF3B82F6),
+                    foregroundColor: Colors.white,
+                    minimumSize: const Size(120, 48),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  child: const Text('OK'),
+                ),
+              ],
+            ),
+          ),
         );
       },
     );
@@ -867,7 +1097,6 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
 
   void _showReportDelayModal(BuildContext context) {
     final reasonController = TextEditingController();
-    final timeController = TextEditingController();
 
     showModalBottomSheet(
       context: context,
@@ -881,38 +1110,151 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
         ),
         child: Container(
           padding: const EdgeInsets.all(24),
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [Colors.white, Color(0xFFFAFBFF)],
+            ),
+            borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+          ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text(
-                'Report Delay',
-                style: TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF59E0B).withOpacity(0.1),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.report_problem_rounded,
+                      color: Color(0xFFF59E0B),
+                      size: 24,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  const Text(
+                    'Report Delay',
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w700,
+                      color: Color(0xFF1E293B),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF8FAFC),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: const Color(0xFFE2E8F0)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(
+                      Icons.local_shipping_rounded,
+                      color: Color(0xFF64748B),
+                      size: 16,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Container: $_containerNo',
+                        style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF1E293B),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
               const SizedBox(height: 16),
-              const Text('Container:'),
-              Text(
-                _containerNo,
-                style: const TextStyle(fontWeight: FontWeight.bold),
+              const Text(
+                'Reason for delay:',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: Color(0xFF1E293B),
+                ),
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 8),
               TextFormField(
                 controller: reasonController,
-                decoration: const InputDecoration(
-                  labelText: 'Reason for delay',
-                  border: OutlineInputBorder(),
+                decoration: InputDecoration(
+                  hintText: 'Enter the reason for delay...',
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(color: Color(0xFF3B82F6)),
+                  ),
+                  contentPadding: const EdgeInsets.all(16),
                 ),
                 maxLines: 3,
               ),
               const SizedBox(height: 16),
-              TextFormField(
-                controller: timeController,
-                decoration: const InputDecoration(
-                  labelText: 'Estimated new arrival time',
-                  border: OutlineInputBorder(),
+              const Text(
+                'Estimated new arrival time:',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: Color(0xFF1E293B),
+                ),
+              ),
+              const SizedBox(height: 8),
+              GestureDetector(
+                onTap: _showDateTimePicker,
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF8FAFC),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFFE2E8F0)),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.calendar_today_rounded,
+                        color: _selectedDelayTime != null 
+                            ? const Color(0xFF3B82F6)
+                            : const Color(0xFF64748B),
+                        size: 20,
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          _selectedDelayTime != null
+                              ? DateFormat('MMM dd, yyyy - HH:mm').format(_selectedDelayTime!)
+                              : 'Select date and time',
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: _selectedDelayTime != null
+                                ? const Color(0xFF1E293B)
+                                : const Color(0xFF94A3B8),
+                            fontWeight: _selectedDelayTime != null
+                                ? FontWeight.w500
+                                : FontWeight.normal,
+                          ),
+                        ),
+                      ),
+                      Icon(
+                        Icons.arrow_forward_ios_rounded,
+                        color: const Color(0xFF64748B),
+                        size: 16,
+                      ),
+                    ],
+                  ),
                 ),
               ),
               const SizedBox(height: 24),
@@ -921,6 +1263,14 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
                   Expanded(
                     child: OutlinedButton(
                       onPressed: () => Navigator.pop(context),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: const Color(0xFF64748B),
+                        side: const BorderSide(color: Color(0xFFE2E8F0)),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                      ),
                       child: const Text('Cancel'),
                     ),
                   ),
@@ -928,17 +1278,34 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
                   Expanded(
                     child: ElevatedButton(
                       onPressed: () {
-                        if (reasonController.text.isEmpty || timeController.text.isEmpty) {
+                        if (reasonController.text.isEmpty) {
                           ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('Please fill all fields')),
+                            const SnackBar(
+                              content: Text('Please enter reason for delay'),
+                              backgroundColor: Color(0xFFEF4444),
+                            ),
+                          );
+                          return;
+                        }
+                        if (_selectedDelayTime == null) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Please select estimated arrival time'),
+                              backgroundColor: Color(0xFFEF4444),
+                            ),
                           );
                           return;
                         }
                         Navigator.pop(context);
-                        _reportDelay(reasonController.text, timeController.text);
+                        _reportDelay(reasonController.text, _selectedDelayTime!);
                       },
                       style: ElevatedButton.styleFrom(
                         backgroundColor: const Color(0xFFF59E0B),
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        padding: const EdgeInsets.symmetric(vertical: 16),
                       ),
                       child: const Text('Submit Report'),
                     ),
@@ -952,117 +1319,180 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
     );
   }
 
+  Future<void> _showDateTimePicker() async {
+    final DateTime? pickedDate = await showDatePicker(
+      context: context,
+      initialDate: DateTime.now().add(const Duration(hours: 1)),
+      firstDate: DateTime.now(),
+      lastDate: DateTime(2100),
+      builder: (context, child) {
+        return Theme(
+          data: ThemeData.light().copyWith(
+            colorScheme: const ColorScheme.light(
+              primary: Color(0xFF3B82F6),
+            ),
+          ),
+          child: child!,
+        );
+      },
+    );
+
+    if (pickedDate != null) {
+      final TimeOfDay? pickedTime = await showTimePicker(
+        context: context,
+        initialTime: TimeOfDay.fromDateTime(DateTime.now().add(const Duration(hours: 1))),
+        builder: (context, child) {
+          return Theme(
+            data: ThemeData.light().copyWith(
+              colorScheme: const ColorScheme.light(
+                primary: Color(0xFF3B82F6),
+              ),
+            ),
+            child: child!,
+          );
+        },
+      );
+
+      if (pickedTime != null) {
+        setState(() {
+          _selectedDelayTime = DateTime(
+            pickedDate.year,
+            pickedDate.month,
+            pickedDate.day,
+            pickedTime.hour,
+            pickedTime.minute,
+          );
+        });
+      }
+    }
+  }
+
   void _showDeliveryConfirmationModal(BuildContext context) {
     showDialog(
       context: context,
       builder: (BuildContext context) {
-        return AlertDialog(
-          title: const Text('Confirm Delivery'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('Container: $_containerNo'),
-              const SizedBox(height: 8),
-              const Text('Are you sure you want to mark this delivery as completed?'),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Cancel'),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                Navigator.of(context).pop();
-                _confirmDelivery();
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF10B981),
+        return Dialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          child: Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Colors.white, Color(0xFFFAFBFF)],
               ),
-              child: const Text('Confirm'),
+              borderRadius: BorderRadius.circular(20),
             ),
-          ],
-        );
-      },
-    );
-  }
-
-  void _showSuccessModal(String message) {
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return Dialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          child: Padding(
-            padding: const EdgeInsets.all(24),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(
-                  Icons.check_circle,
-                  color: Color(0xFF10B981),
-                  size: 64,
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF10B981).withOpacity(0.1),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.delivery_dining_rounded,
+                    color: Color(0xFF10B981),
+                    size: 40,
+                  ),
                 ),
                 const SizedBox(height: 16),
-                Text(
-                  message,
+                const Text(
+                  "Confirm Delivery",
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF1E293B),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF8FAFC),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFFE2E8F0)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(
+                            Icons.local_shipping_rounded,
+                            color: Color(0xFF64748B),
+                            size: 16,
+                          ),
+                          const SizedBox(width: 8),
+                          const Text(
+                            "Container:",
+                            style: TextStyle(
+                              fontSize: 14,
+                              color: Color(0xFF64748B),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        _containerNo,
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF1E293B),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  'Are you sure you want to mark this delivery as completed?',
                   textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: Color(0xFF64748B),
                   ),
                 ),
                 const SizedBox(height: 24),
-                ElevatedButton(
-                  onPressed: () => Navigator.of(context).pop(),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF3B82F6),
-                    minimumSize: const Size(120, 48),
-                  ),
-                  child: const Text('OK'),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  void _showErrorModal(String message) {
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return Dialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(
-                  Icons.error,
-                  color: Color(0xFFEF4444),
-                  size: 64,
-                ),
-                const SizedBox(height: 16),
-                Text(
-                  message,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                const SizedBox(height: 24),
-                ElevatedButton(
-                  onPressed: () => Navigator.of(context).pop(),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF3B82F6),
-                    minimumSize: const Size(120, 48),
-                  ),
-                  child: const Text('OK'),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.of(context).pop(),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: const Color(0xFF64748B),
+                          side: const BorderSide(color: Color(0xFFE2E8F0)),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                        ),
+                        child: const Text('Cancel'),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: () {
+                          Navigator.of(context).pop();
+                          _confirmDelivery();
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF10B981),
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                        ),
+                        child: const Text('Confirm'),
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -1094,82 +1524,79 @@ class LiveMapWidget extends StatelessWidget {
     return SizedBox(
       width: double.infinity,
       height: double.infinity,
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(0),
-        child: FlutterMap(
-          options: MapOptions(
-            initialCenter: currentTruckLocation,
-            initialZoom: 10.0,
-            minZoom: 5.0,
-            maxZoom: 18.0,
-            interactiveFlags: InteractiveFlag.pinchZoom | InteractiveFlag.drag,
+      child: FlutterMap(
+        options: MapOptions(
+          initialCenter: currentTruckLocation,
+          initialZoom: 10.0,
+          minZoom: 5.0,
+          maxZoom: 18.0,
+          interactiveFlags: InteractiveFlag.pinchZoom | InteractiveFlag.drag,
+        ),
+        children: [
+          TileLayer(
+            urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+            userAgentPackageName: 'com.example.cargo_app',
+            maxNativeZoom: 19,
           ),
-          children: [
-            TileLayer(
-              urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-              userAgentPackageName: 'com.example.cargo_app',
-              maxNativeZoom: 19,
-            ),
-            
-            // Delivery route
-            if (deliveryRoute.length > 1)
-              PolylineLayer(
-                polylines: [
-                  Polyline(
-                    points: deliveryRoute,
-                    color: const Color(0xFFEF4444).withOpacity(0.7),
-                    strokeWidth: 4.0,
-                    borderColor: Colors.white.withOpacity(0.5),
-                    borderStrokeWidth: 1.0,
-                  ),
-                ],
-              ),
-            
-            MarkerLayer(
-              markers: [
-                Marker(
-                  point: ports[0],
-                  width: 80,
-                  height: 80,
-                  child: const MapMarker(
-                    label: "Manila Port",
-                    color: Color(0xFF10B981),
-                  ),
-                ),
-                Marker(
-                  point: ports[1],
-                  width: 80,
-                  height: 80,
-                  child: const MapMarker(
-                    label: "Cebu Port",
-                    color: Color(0xFF3B82F6),
-                  ),
-                ),
-                Marker(
-                  point: ports[2],
-                  width: 80,
-                  height: 80,
-                  child: const MapMarker(
-                    label: "Batangas Port",
-                    color: Color(0xFF10B981),
-                  ),
-                ),
-                
-                Marker(
-                  point: currentTruckLocation,
-                  width: 80,
-                  height: 80,
-                  child: MapMarker(
-                    label: "Your Truck",
-                    color: const Color(0xFFF59E0B),
-                    isTruck: true,
-                    onTap: onTruckTap,
-                  ),
+          
+          // Delivery route
+          if (deliveryRoute.length > 1)
+            PolylineLayer(
+              polylines: [
+                Polyline(
+                  points: deliveryRoute,
+                  color: const Color(0xFF3B82F6).withOpacity(0.7),
+                  strokeWidth: 4.0,
+                  borderColor: Colors.white.withOpacity(0.5),
+                  borderStrokeWidth: 1.0,
                 ),
               ],
             ),
-          ],
-        ),
+          
+          MarkerLayer(
+            markers: [
+              Marker(
+                point: ports[0],
+                width: 80,
+                height: 80,
+                child: const MapMarker(
+                  label: "Manila Port",
+                  color: Color(0xFF10B981),
+                ),
+              ),
+              Marker(
+                point: ports[1],
+                width: 80,
+                height: 80,
+                child: const MapMarker(
+                  label: "Cebu Port",
+                  color: Color(0xFF3B82F6),
+                ),
+              ),
+              Marker(
+                point: ports[2],
+                width: 80,
+                height: 80,
+                child: const MapMarker(
+                  label: "Batangas Port",
+                  color: Color(0xFF10B981),
+                ),
+              ),
+              
+              Marker(
+                point: currentTruckLocation,
+                width: 80,
+                height: 80,
+                child: MapMarker(
+                  label: "Your Truck",
+                  color: const Color(0xFFF59E0B),
+                  isTruck: true,
+                  onTap: onTruckTap,
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
@@ -1186,7 +1613,7 @@ class MapMarker extends StatelessWidget {
     super.key,
     required this.label,
     required this.color,
-    this.icon = Icons.location_on,
+    this.icon = Icons.location_on_rounded,
     this.isTruck = false,
     this.onTap,
   });
@@ -1235,26 +1662,10 @@ class MapMarker extends StatelessWidget {
                   ),
                 ],
               ),
-              child: Stack(
-                children: [
-                  Icon(
-                    Icons.local_shipping,
-                    color: Colors.white,
-                    size: 24,
-                  ),
-                  Positioned(
-                    left: 4,
-                    top: 6,
-                    child: Container(
-                      width: 4,
-                      height: 4,
-                      decoration: BoxDecoration(
-                        color: Colors.yellow[700],
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                  ),
-                ],
+              child: const Icon(
+                Icons.local_shipping_rounded,
+                color: Colors.white,
+                size: 20,
               ),
             )
           else
@@ -1265,45 +1676,6 @@ class MapMarker extends StatelessWidget {
             ),
         ],
       ),
-    );
-  }
-}
-
-class LegendItem extends StatelessWidget {
-  final Color color;
-  final String label;
-
-  const LegendItem({
-    super.key,
-    required this.color,
-    required this.label,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 4),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            width: 12,
-            height: 12,
-            decoration: BoxDecoration(
-              color: color,
-              shape: BoxShape.circle,
-            ),
-          ),
-          const SizedBox(width: 8),
-          Text(
-            label,
-            style: const TextStyle(
-              fontSize: 10,
-              color: Color(0xFF64748B),
-            ),
-          ),
-        ],
-      )
     );
   }
 }
@@ -1340,9 +1712,9 @@ class _QRScannerPageState extends State<QRScannerPage> {
               builder: (context, state, child) {
                 switch (state) {
                   case TorchState.off:
-                    return const Icon(Icons.flash_off, color: Colors.grey);
+                    return const Icon(Icons.flash_off_rounded, color: Colors.grey);
                   case TorchState.on:
-                    return const Icon(Icons.flash_on, color: Colors.yellow);
+                    return const Icon(Icons.flash_on_rounded, color: Colors.yellow);
                 }
               },
             ),
@@ -1357,13 +1729,24 @@ class _QRScannerPageState extends State<QRScannerPage> {
             color: const Color(0xFF3B82F6),
             child: Column(
               children: [
-                Text(
-                  'Container: ${widget.containerNo}',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                  ),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(
+                      Icons.qr_code_scanner_rounded,
+                      color: Colors.white,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Container: ${widget.containerNo}',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 8),
                 const Text(
@@ -1399,14 +1782,18 @@ class _QRScannerPageState extends State<QRScannerPage> {
           ),
           Container(
             padding: const EdgeInsets.all(16),
-            child: ElevatedButton(
+            child: ElevatedButton.icon(
               style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFF6B7280),
                 foregroundColor: Colors.white,
                 minimumSize: const Size(double.infinity, 48),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
               ),
               onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel'),
+              icon: const Icon(Icons.cancel_rounded),
+              label: const Text('Cancel Scan'),
             ),
           ),
         ],

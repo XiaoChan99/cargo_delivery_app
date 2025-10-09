@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'login_page.dart';
 import 'homepage.dart';
 import 'schedulepage.dart';
@@ -8,6 +9,7 @@ import 'info_page.dart';
 import 'change_password_page.dart';
 import 'terms_privacy_page.dart';
 import 'contact_support_page.dart';
+
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
 
@@ -17,6 +19,14 @@ class SettingsPage extends StatefulWidget {
 
 class _SettingsPageState extends State<SettingsPage> {
   bool notificationsEnabled = true;
+  final FirebaseAuth _auth = FirebaseAuth.instance;
+  User? _currentUser;
+
+  @override
+  void initState() {
+    super.initState();
+    _currentUser = _auth.currentUser;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -101,10 +111,16 @@ class _SettingsPageState extends State<SettingsPage> {
                     icon: Icons.analytics_outlined,
                     title: "Analytics",
                     onTap: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(builder: (context) => const AnalyticsPage()),
-                      );
+                      if (_currentUser != null) {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => AnalyticsPage(userId: _currentUser!.uid),
+                          ),
+                        );
+                      } else {
+                        _showErrorDialog('Please login to view analytics');
+                      }
                     },
                   ),
                   _buildDivider(),
@@ -295,6 +311,30 @@ class _SettingsPageState extends State<SettingsPage> {
                 foregroundColor: Colors.white,
               ),
               child: const Text("Logout"),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _showErrorDialog(String message) {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text("Error"),
+          content: Text(message),
+          actions: [
+            ElevatedButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF3B82F6),
+                foregroundColor: Colors.white,
+              ),
+              child: const Text("OK"),
             ),
           ],
         );

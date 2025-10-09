@@ -9,6 +9,7 @@ import 'settings_page.dart';
 import 'container_details_page.dart';
 import 'notifications_page.dart';
 import 'live_location_page.dart';
+import 'analytics_page.dart'; // Add analytics page import
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -24,6 +25,10 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
   Map<String, dynamic> _userData = {};
   bool _isLoading = true;
   String? _errorMessage;
+  
+  // Notification badge state
+  bool _hasUnreadNotifications = false;
+  StreamSubscription? _notificationSubscription;
 
   // Image slider
   final PageController _pageController = PageController();
@@ -47,6 +52,7 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
       _loadData();
       setupCargoListener(_loadAvailableCargos);
       setupDeliveryListener(_currentUser!.uid, _loadInProgressDeliveries);
+      _setupNotificationListener();
       _startAutoSlide();
     } else {
       _isLoading = false;
@@ -58,7 +64,25 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
   void dispose() {
     _pageController.dispose();
     _autoSlideTimer?.cancel();
+    _notificationSubscription?.cancel();
     super.dispose();
+  }
+
+  void _setupNotificationListener() {
+    if (_currentUser == null) return;
+    
+    _notificationSubscription = _firestore
+        .collection('Notifications')
+        .where('userId', isEqualTo: _currentUser!.uid)
+        .where('read', isEqualTo: false)
+        .snapshots()
+        .listen((snapshot) {
+      if (mounted) {
+        setState(() {
+          _hasUnreadNotifications = snapshot.docs.isNotEmpty;
+        });
+      }
+    });
   }
 
   void _startAutoSlide() {
@@ -97,17 +121,16 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
     }
   }
 
+  // ...existing code...
   Future<void> _loadAvailableCargos() async {
     try {
       print('Loading available cargos...');
       
-      // Get all cargo documents
       QuerySnapshot cargoSnapshot = await _firestore
           .collection('Cargo')
           .orderBy('created_at', descending: true)
           .get();
 
-      // Get all cargo IDs that have delivery records
       QuerySnapshot deliverySnapshot = await _firestore
           .collection('CargoDelivery')
           .get();
@@ -123,9 +146,10 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
       List<Map<String, dynamic>> availableCargos = [];
       for (var doc in cargoSnapshot.docs) {
         var cargoData = doc.data() as Map<String, dynamic>;
-        
-        // Only include cargos that are not assigned to any delivery
-        if (!assignedCargoIds.contains(doc.id)) {
+        final status = cargoData['status']?.toString().toLowerCase() ?? 'pending';
+
+        // Only include cargos that are not assigned to any delivery and not delayed
+        if (!assignedCargoIds.contains(doc.id) && status != 'delayed') {
           Map<String, dynamic> combinedData = {
             'cargo_id': doc.id,
             'containerNo': 'CONT-${cargoData['item_number']?.toString() ?? 'N/A'}',
@@ -171,9 +195,8 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
         var deliveryData = doc.data() as Map<String, dynamic>;
         String status = deliveryData['status']?.toString().toLowerCase() ?? '';
         
-        // Only include in-progress, in_transit, or assigned statuses
-        if (status == 'in-progress' || status == 'in_transit' || status == 'assigned') {
-          // Get cargo details using cargo_id foreign key
+        // Only include in-progress, in_transit, assigned, or delayed statuses
+        if (status == 'in-progress' || status == 'in_transit' || status == 'assigned' || status == 'delayed') {
           try {
             DocumentSnapshot cargoDoc = await _firestore
                 .collection('Cargo')
@@ -267,7 +290,7 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
 
       // Create notification for admin
       try {
-        await _firestore.collection('notifications').add({
+        await _firestore.collection('Notifications').add({
           'userId': 'admin',
           'type': 'delivery_assigned',
           'message': 'Cargo ${cargoData['containerNo']} has been accepted by ${_getFullName()}',
@@ -485,6 +508,27 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
     );
   }
 
+  Widget _buildNotificationIcon() {
+    return Stack(
+      children: [
+        const Icon(Icons.notifications, color: Colors.white, size: 24),
+        if (_hasUnreadNotifications)
+          Positioned(
+            right: 0,
+            top: 0,
+            child: Container(
+              width: 8,
+              height: 8,
+              decoration: const BoxDecoration(
+                color: Colors.red,
+                shape: BoxShape.circle,
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
@@ -584,9 +628,9 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
                     ],
                   ),
                   
-                  // Notification icon
+                  // Notification icon with badge
                   IconButton(
-                    icon: const Icon(Icons.notifications, color: Colors.white, size: 24),
+                    icon: _buildNotificationIcon(),
                     onPressed: () {
                       Navigator.push(
                         context,
@@ -600,7 +644,7 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
               ),
             ),
 
-            // Profile Section
+            // Profile Section (removed box shadow)
             Container(
               margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
               padding: const EdgeInsets.all(20),
@@ -614,13 +658,6 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
                   ],
                 ),
                 borderRadius: BorderRadius.all(Radius.circular(16)),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black26,
-                    blurRadius: 15,
-                    offset: Offset(0, 6),
-                  ),
-                ],
               ),
               child: Row(
                 children: [
@@ -722,13 +759,6 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
               height: 150,
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(16),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.1),
-                    blurRadius: 10,
-                    offset: const Offset(0, 4),
-                  ),
-                ],
               ),
               child: Stack(
                 children: [
@@ -801,7 +831,7 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
 
             const SizedBox(height: 20),
 
-            // Cargos and Track Section
+            // Cargos and Track Section (removed box shadow)
             Container(
               margin: const EdgeInsets.symmetric(horizontal: 16),
               child: Row(
@@ -828,12 +858,44 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
                       const Color(0xFF10B981),
                       _inProgressDeliveries.length.toString(),
                       () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(builder: (context) => const LiveMapPage()),
-                        );
+                        if (_inProgressDeliveries.isNotEmpty) {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(builder: (context) => const LiveMapPage()),
+                          );
+                        } else {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('No in-progress deliveries to track'),
+                              backgroundColor: Color(0xFFF59E0B),
+                            ),
+                          );
+                        }
                       },
                     ),
+                  ),
+                ],
+              ),
+            ),
+
+            const SizedBox(height: 20),
+
+            // Order History and Performance Section (without Reports title)
+            Container(
+              margin: const EdgeInsets.symmetric(horizontal: 16),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: _buildReportItem("Order History", Icons.history, const Color(0xFF3B82F6)),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _buildReportItem("Performance", Icons.assessment, const Color(0xFFF59E0B), onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (context) => AnalyticsPage(userId: _currentUser!.uid)),
+                      );
+                    }),
                   ),
                 ],
               ),
@@ -849,55 +911,6 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
                 _availableCargos.length,
                 true, // isAvailable
               ),
-
-            const SizedBox(height: 20),
-
-            // Reports Section
-            Container(
-              margin: const EdgeInsets.symmetric(horizontal: 16),
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                gradient: const LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [Colors.white, Color(0xFFFAFBFF)],
-                ),
-                borderRadius: BorderRadius.circular(16),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.08),
-                    blurRadius: 20,
-                    offset: const Offset(0, 4),
-                  ),
-                ],
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    "Reports",
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w700,
-                      color: Color(0xFF1E293B),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  GridView.count(
-                    shrinkWrap: true,
-                    physics: const NeverScrollableScrollPhysics(),
-                    crossAxisCount: 2,
-                    crossAxisSpacing: 12,
-                    mainAxisSpacing: 12,
-                    childAspectRatio: 2.5,
-                    children: [
-                      _buildReportItem("Order History", Icons.history, const Color(0xFF3B82F6)),
-                      _buildReportItem("Performance", Icons.assessment, const Color(0xFFF59E0B)),
-                    ],
-                  ),
-                ],
-              ),
-            ),
 
             const SizedBox(height: 20),
 
@@ -919,111 +932,102 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
   }
 
   Widget _buildActionCard(String title, IconData icon, Color color, String count, VoidCallback onTap) {
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
         borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.08),
-            blurRadius: 20,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      ),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          borderRadius: BorderRadius.circular(16),
-          onTap: onTap,
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: color.withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Icon(icon, color: color, size: 24),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: color.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(8),
                     ),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: color.withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Text(
-                        count,
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                          color: color,
-                        ),
+                    child: Icon(icon, color: color, size: 24),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: color.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      count,
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: color,
                       ),
                     ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  title,
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                    color: Color(0xFF1E293B),
                   ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(
+                title,
+                style: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  color: Color(0xFF1E293B),
                 ),
-                const SizedBox(height: 4),
-                Text(
-                  title == "Cargos" ? "Available for delivery" : "Track your cargo",
-                  style: const TextStyle(
-                    fontSize: 12,
-                    color: Color(0xFF64748B),
-                  ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                title == "Cargos" ? "Available for delivery" : "Track your cargo",
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: Color(0xFF64748B),
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
       ),
     );
   }
 
-  Widget _buildReportItem(String title, IconData icon, Color color) {
+  Widget _buildReportItem(String title, IconData icon, Color color, {VoidCallback? onTap}) {
     return Container(
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: color.withOpacity(0.2)),
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
       ),
       child: Material(
         color: Colors.transparent,
         child: InkWell(
-          borderRadius: BorderRadius.circular(12),
-          onTap: () {
-            // Handle report item tap
-          },
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: Row(
-              children: [
-                Icon(icon, color: color, size: 20),
-                const SizedBox(width: 8),
-                Text(
-                  title,
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    color: color,
-                  ),
+          borderRadius: BorderRadius.circular(16),
+          onTap: onTap,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: color.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
                 ),
-              ],
-            ),
+                child: Icon(icon, color: color, size: 20),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                title,
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: color,
+                ),
+              ),
+            ],
           ),
         ),
       ),
@@ -1096,6 +1100,12 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
   }
 
   Widget _buildCargoDeliveryCard(Map<String, dynamic> delivery, bool isAvailable) {
+    // Check if this delivery is already accepted/in-progress
+    final status = delivery['status']?.toString().toLowerCase() ?? 'pending';
+    final bool isAlreadyAccepted = status == 'in-progress' || 
+                                  status == 'in_transit' || 
+                                  status == 'assigned';
+    
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -1202,41 +1212,39 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
                     }
                   },
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFFF1F5F9),
-                    foregroundColor: const Color(0xFF475569),
-                    elevation: 0,
+                    backgroundColor: const Color(0xFF3B82F6),
+                    foregroundColor: Colors.white,
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(8),
                     ),
-                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    padding: const EdgeInsets.symmetric(vertical: 12),
                   ),
-                  child: const Text(
-                    'View Details',
-                    style: TextStyle(fontSize: 14),
+                  child: Text(
+                    status == 'in-progress' || status == 'in_transit' ? 'Track Now' : 'View Details',
+                    style: const TextStyle(fontWeight: FontWeight.w600),
                   ),
                 ),
               ),
-              if (isAvailable) ...[
+              if (isAvailable && !isAlreadyAccepted)
                 const SizedBox(width: 8),
+              if (isAvailable && !isAlreadyAccepted)
                 Expanded(
                   child: ElevatedButton(
                     onPressed: () => _acceptCargoDelivery(delivery),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFF10B981),
                       foregroundColor: Colors.white,
-                      elevation: 0,
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(8),
                       ),
-                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
                     ),
                     child: const Text(
                       'Accept',
-                      style: TextStyle(fontSize: 14),
+                      style: TextStyle(fontWeight: FontWeight.w600),
                     ),
                   ),
                 ),
-              ],
             ],
           ),
         ],
@@ -1244,12 +1252,16 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
     );
   }
 
-    Widget _buildBottomNavigation(BuildContext context, int currentIndex) {
+   Widget _buildBottomNavigation(BuildContext context, int currentIndex) {
     return Container(
       decoration: BoxDecoration(
         color: Colors.white,
         boxShadow: [
-          BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 20, offset: const Offset(0, -4)),
+          BoxShadow(
+            color: Colors.black.withOpacity(0.1),
+            blurRadius: 20,
+            offset: const Offset(0, -4),
+          ),
         ],
       ),
       child: BottomNavigationBar(
@@ -1263,24 +1275,49 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
         onTap: (index) {
           switch (index) {
             case 0:
-              Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => const HomePage()));
+              Navigator.pushReplacement(
+                context,
+                MaterialPageRoute(builder: (context) => const HomePage()),
+              );
               break;
             case 1:
-              Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => const SchedulePage()));
+              Navigator.pushReplacement(
+                context,
+                MaterialPageRoute(builder: (context) => const SchedulePage()),
+              );
               break;
             case 2:
-              Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => const LiveMapPage()));
+              Navigator.pushReplacement(
+                context,
+                MaterialPageRoute(builder: (context) => const LiveMapPage()),
+              );
               break;
             case 3:
-              Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => const SettingsPage()));
+              // Already on Settings page
               break;
           }
         },
         items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.home_outlined), activeIcon: Icon(Icons.home), label: 'Home'),
-          BottomNavigationBarItem(icon: Icon(Icons.schedule_outlined), activeIcon: Icon(Icons.schedule), label: 'Schedule'),
-          BottomNavigationBarItem(icon: Icon(Icons.map_outlined), activeIcon: Icon(Icons.map), label: 'Live Map'),
-          BottomNavigationBarItem(icon: Icon(Icons.settings_outlined), activeIcon: Icon(Icons.settings), label: 'Settings'),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.home_outlined),
+            activeIcon: Icon(Icons.home),
+            label: 'Home',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.schedule_outlined),
+            activeIcon: Icon(Icons.schedule),
+            label: 'Schedule',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.map_outlined),
+            activeIcon: Icon(Icons.map),
+            label: 'Live Map',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.settings_outlined),
+            activeIcon: Icon(Icons.settings),
+            label: 'Settings',
+          ),
         ],
       ),
     );
@@ -1288,38 +1325,48 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
 
 }
 
-// AutoRefreshMixin for real-time updates
 mixin AutoRefreshMixin<T extends StatefulWidget> on State<T> {
-  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  List<StreamSubscription> _subscriptions = [];
+  Timer? _refreshTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _startAutoRefresh();
+  }
 
   @override
   void dispose() {
-    for (var subscription in _subscriptions) {
-      subscription.cancel();
-    }
+    _refreshTimer?.cancel();
     super.dispose();
   }
 
-  void addSubscription(StreamSubscription subscription) {
-    _subscriptions.add(subscription);
+  void _startAutoRefresh() {
+    _refreshTimer = Timer.periodic(const Duration(seconds: 30), (timer) {
+      if (mounted) {
+        _refreshData();
+      }
+    });
   }
 
-  void setupCargoListener(VoidCallback onUpdate) {
-    final subscription = _firestore.collection('Cargo').snapshots().listen((_) {
-      if (mounted) onUpdate();
-    });
-    addSubscription(subscription);
+  void _refreshData() {
+    // This method should be implemented by the parent class
+    if (this is _HomePageState) {
+      (this as _HomePageState)._loadData();
+    }
   }
+}
 
-  void setupDeliveryListener(String userId, VoidCallback onUpdate) {
-    final subscription = _firestore
-        .collection('CargoDelivery')
-        .where('courier_id', isEqualTo: userId)
-        .snapshots()
-        .listen((_) {
-      if (mounted) onUpdate();
-    });
-    addSubscription(subscription);
-  }
+void setupCargoListener(Function refreshCallback) {
+  FirebaseFirestore.instance
+      .collection('Cargo')
+      .snapshots()
+      .listen((_) => refreshCallback());
+}
+
+void setupDeliveryListener(String userId, Function refreshCallback) {
+  FirebaseFirestore.instance
+      .collection('CargoDelivery')
+      .where('courier_id', isEqualTo: userId)
+      .snapshots()
+      .listen((_) => refreshCallback());
 }
