@@ -817,9 +817,9 @@ class _StatusUpdatePageState extends State<StatusUpdatePage> {
                     width: double.infinity,
                     padding: EdgeInsets.fromLTRB(
                       isSmallScreen ? 16 : 24,
-                      MediaQuery.of(context).padding.top + 16,
+                      MediaQuery.of(context).padding.top + 8,
                       isSmallScreen ? 16 : 24,
-                      24,
+                      16,
                     ),
                     decoration: const BoxDecoration(
                       gradient: LinearGradient(

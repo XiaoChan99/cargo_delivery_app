@@ -2,10 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:flutter_map/flutter_map.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
-import 'livemap_page.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'dart:async';
+import 'dart:math';
+import 'osmservice.dart';
 
 class LiveLocationPage extends StatefulWidget {
   final Map<String, dynamic>? cargoData;
@@ -60,6 +62,32 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
   Map<String, dynamic>? _deliveryData;
   bool _isLoading = true;
   DateTime? _selectedDelayTime;
+  LatLng? _courierLocation;
+  List<LatLng> _deliveryRoute = [];
+  Timer? _locationUpdateTimer;
+  String _eta = 'Calculating...';
+  double _progress = 0.0;
+  Map<String, dynamic>? _routeInfo;
+
+  // Local distance calculation method
+  double _calculateDistance(LatLng point1, LatLng point2) {
+    const double earthRadius = 6371.0; // Earth's radius in kilometers
+    
+    final double lat1 = point1.latitude * (pi / 180.0);
+    final double lon1 = point1.longitude * (pi / 180.0);
+    final double lat2 = point2.latitude * (pi / 180.0);
+    final double lon2 = point2.longitude * (pi / 180.0);
+    
+    final double dLat = lat2 - lat1;
+    final double dLon = lon2 - lon1;
+    
+    final double a = sin(dLat / 2) * sin(dLat / 2) +
+        cos(lat1) * cos(lat2) *
+        sin(dLon / 2) * sin(dLon / 2);
+    final double c = 2 * atan2(sqrt(a), sqrt(1 - a));
+    
+    return earthRadius * c;
+  }
 
   @override
   void initState() {
@@ -67,13 +95,92 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
     _loadCargoAndDeliveryData();
   }
 
+  @override
+  void dispose() {
+    _locationUpdateTimer?.cancel();
+    super.dispose();
+  }
+  void _startLocationUpdates() {
+    // Remove automatic movement - just update ETA periodically
+    _locationUpdateTimer = Timer.periodic(const Duration(seconds: 30), (timer) {
+      _updateETA();
+    });
+  }
+
+  Future<void> _updateCourierLocation() async {
+      _updateETA();
+  }
+
+  LatLng _getCurrentLocationOnRoute() {
+    if (_deliveryRoute.isEmpty) return const LatLng(14.5995, 120.9842);
+    
+    final totalDistance = _calculateTotalRouteDistance();
+    final targetDistance = totalDistance * _progress;
+    
+    double accumulatedDistance = 0.0;
+    
+    for (int i = 0; i < _deliveryRoute.length - 1; i++) {
+      final segmentDistance = _calculateDistance(
+        _deliveryRoute[i], 
+        _deliveryRoute[i + 1]
+      );
+      
+      if (accumulatedDistance + segmentDistance >= targetDistance) {
+        final ratio = (targetDistance - accumulatedDistance) / segmentDistance;
+        return LatLng(
+          _deliveryRoute[i].latitude + (_deliveryRoute[i + 1].latitude - _deliveryRoute[i].latitude) * ratio,
+          _deliveryRoute[i].longitude + (_deliveryRoute[i + 1].longitude - _deliveryRoute[i].longitude) * ratio,
+        );
+      }
+      accumulatedDistance += segmentDistance;
+    }
+    
+    return _deliveryRoute.last;
+  }
+
+  double _calculateTotalRouteDistance() {
+    double total = 0.0;
+    for (int i = 0; i < _deliveryRoute.length - 1; i++) {
+      total += _calculateDistance(_deliveryRoute[i], _deliveryRoute[i + 1]);
+    }
+    return total;
+  }
+
+  void _updateETA() {
+    if (_routeInfo == null) {
+      setState(() {
+        _eta = 'Calculating...';
+      });
+      return;
+    }
+
+    if (_progress >= 1.0) {
+      setState(() {
+        _eta = 'Arrived';
+      });
+      return;
+    }
+
+    final remainingDistance = (_routeInfo!['distanceValue'] as double) * (1 - _progress);
+    final averageSpeed = 50.0; // km/h
+    final remainingHours = remainingDistance / averageSpeed;
+    final now = DateTime.now();
+    final etaTime = now.add(Duration(
+    hours: remainingHours.toInt(), 
+    minutes: ((remainingHours % 1) * 60).toInt()
+  ));
+  
+    
+    setState(() {
+      _eta = DateFormat('hh:mm a').format(etaTime);
+    });
+  }
+
   Future<void> _loadCargoAndDeliveryData() async {
     try {
-      // If cargoData is provided, use it directly
       if (widget.cargoData != null) {
         _cargoData = widget.cargoData;
         
-        // Load additional delivery data if needed
         final cargoId = widget.cargoId;
         if (cargoId.isNotEmpty) {
           QuerySnapshot deliveryQuery = await _firestore
@@ -87,16 +194,17 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
           }
         }
 
+        await _generateRealisticDeliveryRoute();
+        _startLocationUpdates();
+        
         setState(() {
           _isLoading = false;
         });
         return;
       }
 
-      // Otherwise, load data using cargoId (for backward compatibility)
       final cargoId = widget.cargoId;
       if (cargoId.isNotEmpty) {
-        // Load cargo data
         DocumentSnapshot cargoDoc = await _firestore
             .collection('Cargo')
             .doc(cargoId)
@@ -106,7 +214,6 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
           _cargoData = cargoDoc.data() as Map<String, dynamic>;
         }
 
-        // Load delivery data from CargoDelivery collection
         QuerySnapshot deliveryQuery = await _firestore
             .collection('CargoDelivery')
             .where('cargo_id', isEqualTo: cargoId)
@@ -116,6 +223,9 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
         if (deliveryQuery.docs.isNotEmpty) {
           _deliveryData = deliveryQuery.docs.first.data() as Map<String, dynamic>;
         }
+
+        await _generateRealisticDeliveryRoute();
+        _startLocationUpdates();
       }
 
       setState(() {
@@ -129,6 +239,118 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
     }
   }
 
+  Future<void> _generateRealisticDeliveryRoute() async {
+  try {
+    // Get coordinates for pickup and destination
+    final pickupCoords = await OSMService.geocodeAddress(_pickup);
+    final destinationCoords = await OSMService.geocodeAddress(_destination);
+    
+    LatLng pickupLocation;
+    LatLng destinationLocation;
+    
+    if (pickupCoords != null) {
+      pickupLocation = LatLng(pickupCoords['lat']!, pickupCoords['lng']!);
+    } else {
+      // Fallback to Manila coordinates
+      pickupLocation = const LatLng(14.5832, 120.9695);
+    }
+    
+    if (destinationCoords != null) {
+      destinationLocation = LatLng(destinationCoords['lat']!, destinationCoords['lng']!);
+    } else {
+      // Fallback to Batangas coordinates
+      destinationLocation = const LatLng(13.7565, 121.0583);
+    }
+
+    // Get real route from OSM
+    _routeInfo = await OSMService.getRouteWithGeometry(pickupLocation, destinationLocation);
+    
+    if (_routeInfo != null && _routeInfo!['routePoints'] != null) {
+      _deliveryRoute = List<LatLng>.from(_routeInfo!['routePoints']);
+    } else {
+      // Fallback route
+      _deliveryRoute = _generateFallbackRoute(pickupLocation, destinationLocation);
+    }
+
+    // Place courier 1km from pickup location (static position)
+    _initializeCourierLocationNearPickup(pickupLocation);
+    
+  } catch (e) {
+    print('Error generating route: $e');
+    // Fallback route
+    final pickupLocation = const LatLng(14.5832, 120.9695);
+    final destinationLocation = const LatLng(13.7565, 121.0583);
+    _deliveryRoute = _generateFallbackRoute(pickupLocation, destinationLocation);
+    _initializeCourierLocationNearPickup(pickupLocation);
+  }
+}
+
+  void _initializeCourierLocationNearPickup(LatLng pickupLocation) {
+    // Place courier 1km away from pickup location along the route
+    if (_deliveryRoute.length > 1) {
+      // Calculate a point 1km from pickup along the route
+      const double initialDistance = 1.0; // 1km
+      double accumulatedDistance = 0.0;
+      
+      for (int i = 0; i < _deliveryRoute.length - 1; i++) {
+        final segmentDistance = _calculateDistance(
+          _deliveryRoute[i], 
+          _deliveryRoute[i + 1]
+        );
+        
+       if (accumulatedDistance + segmentDistance >= initialDistance) {
+        final ratio = (initialDistance - accumulatedDistance) / segmentDistance;
+        final initialLocation = LatLng(
+          _deliveryRoute[i].latitude + (_deliveryRoute[i + 1].latitude - _deliveryRoute[i].latitude) * ratio,
+          _deliveryRoute[i].longitude + (_deliveryRoute[i + 1].longitude - _deliveryRoute[i].longitude) * ratio,
+        );
+          
+          setState(() {
+          _courierLocation = initialLocation;
+          _progress = initialDistance / _calculateTotalRouteDistance();
+        });
+        
+        // Calculate initial ETA immediately after setting position
+        _updateETA();
+        return;
+      }
+        accumulatedDistance += segmentDistance;
+      }
+    }
+    
+    // Fallback: place near pickup location
+    // Fallback: place near pickup location
+  setState(() {
+    _courierLocation = LatLng(
+      pickupLocation.latitude + 0.009, // ~1km north
+      pickupLocation.longitude
+    );
+    _progress = 0.1;
+  });
+  
+  // Calculate initial ETA for fallback position
+  _updateETA();
+}
+  List<LatLng> _generateFallbackRoute(LatLng pickup, LatLng destination) {
+    // Generate intermediate points for a realistic route
+    return [
+      pickup,
+      LatLng(
+        pickup.latitude + (destination.latitude - pickup.latitude) * 0.25,
+        pickup.longitude + (destination.longitude - pickup.longitude) * 0.25,
+      ),
+      LatLng(
+        pickup.latitude + (destination.latitude - pickup.latitude) * 0.5,
+        pickup.longitude + (destination.longitude - pickup.longitude) * 0.5,
+      ),
+      LatLng(
+        pickup.latitude + (destination.latitude - pickup.latitude) * 0.75,
+        pickup.longitude + (destination.longitude - pickup.longitude) * 0.75,
+      ),
+      destination,
+    ];
+  }
+
   // Getter methods to safely access data
   String get _cargoId {
     return _cargoData?['cargo_id'] ?? widget.cargoId;
@@ -139,7 +361,8 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
   }
 
   String get _status {
-    return _cargoData?['status'] ?? widget.status;
+    // Prioritize delivery data status, then cargo data, then widget status
+    return _deliveryData?['status'] ?? _cargoData?['status'] ?? widget.status;
   }
 
   String get _pickup {
@@ -231,6 +454,14 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
         'containerNo': _containerNo,
       });
 
+      // Update local state
+      setState(() {
+        _cargoData?['status'] = 'delivered';
+        _deliveryData?['status'] = 'delivered';
+        _progress = 1.0;
+        _eta = 'Arrived';
+      });
+
       _showSuccessModal('Delivery marked as completed successfully!');
       
       // Navigate back to home after delay
@@ -288,6 +519,13 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
         'read': false,
         'cargoId': _cargoId,
         'containerNo': _containerNo,
+      });
+
+      // Update local state
+      setState(() {
+        _cargoData?['status'] = 'delayed';
+        _deliveryData?['status'] = 'delayed';
+        _selectedDelayTime = null;
       });
 
       _showSuccessModal('Delay reported successfully!');
@@ -484,32 +722,13 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
       );
     }
 
-    // Create realistic drivable routes using major highways and roads
-    final LatLng manilaPort = const LatLng(14.5832, 120.9695); // Manila South Harbor
-    final LatLng batangasPort = const LatLng(13.7565, 121.0583); // Batangas Port
-    final LatLng cebuPort = const LatLng(10.3157, 123.8854); // Cebu Port
-    final LatLng davaoPort = const LatLng(7.1378, 125.6143); // Davao Sasa Port
-    final LatLng subicPort = const LatLng(14.7942, 120.2799); // Subic Port
-    
-    List<LatLng> deliveryRoute = [
-      manilaPort,
-      const LatLng(14.5200, 121.0000), // Entering SLEX
-      const LatLng(14.4500, 121.0200), // SLEX towards Calamba
-      const LatLng(14.2000, 121.1000), // STAR Tollway entrance
-      const LatLng(14.0000, 121.1500), // STAR Tollway
-      const LatLng(13.9000, 121.1200), // Approaching Batangas
-      batangasPort,
-    ];
-    
-    List<LatLng> ports = [manilaPort, cebuPort, davaoPort, subicPort, batangasPort];
-
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
       body: LayoutBuilder(
         builder: (context, constraints) {
           bool isTablet = constraints.maxWidth > 600;
           double horizontalPadding = isTablet ? 32.0 : 16.0;
-          double mapHeight = isTablet ? 250.0 : 180.0;
+          double mapHeight = isTablet ? 300.0 : 220.0;
 
           return SingleChildScrollView(
             child: Column(
@@ -517,12 +736,12 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
                 // Header with back button
                 Container(
                   width: double.infinity,
-                  padding: EdgeInsets.fromLTRB(
-                    horizontalPadding, 
-                    isTablet ? 80.0 : 60.0, 
-                    horizontalPadding, 
-                    24
-                  ),
+                    padding: EdgeInsets.fromLTRB(
+                      horizontalPadding, 
+                      isTablet ? 40.0 : MediaQuery.of(context).padding.top + 8,
+                      horizontalPadding, 
+                      16
+                    ),
                   decoration: const BoxDecoration(
                     gradient: LinearGradient(
                       begin: Alignment.topLeft,
@@ -571,80 +790,8 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
 
                 const SizedBox(height: 16),
 
-                // Live Location Map
-                Container(
-                  margin: EdgeInsets.symmetric(horizontal: horizontalPadding),
-                  padding: const EdgeInsets.all(20),
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: [Colors.white, Color(0xFFFAFBFF)],
-                    ),
-                    borderRadius: BorderRadius.circular(16),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withOpacity(0.08),
-                        blurRadius: 20,
-                        offset: const Offset(0, 4),
-                      ),
-                    ],
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          const Icon(
-                            Icons.map_rounded,
-                            color: Color(0xFF3B82F6),
-                            size: 20,
-                          ),
-                          const SizedBox(width: 8),
-                          const Text(
-                            "Live Location",
-                            style: TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.w700,
-                              color: Color(0xFF1E293B),
-                            ),
-                          ),
-                          const Spacer(),
-                          const Icon(
-                            Icons.access_time_rounded,
-                            color: Color(0xFF64748B),
-                            size: 16,
-                          ),
-                          const SizedBox(width: 4),
-                          const Text(
-                            "ETA: 11:15 AM",
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: Color(0xFF64748B),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 16),
-                      Container(
-                        height: mapHeight,
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFF1F5F9),
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: const Color(0xFFE2E8F0)),
-                        ),
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(12),
-                          child: LiveMapWidget(
-                            deliveryRoute: deliveryRoute,
-                            ports: ports,
-                            truckLocation: const LatLng(14.3000, 121.0800), // Current truck position
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
+                // Live Location Map - Real-time with ETA
+                _buildLiveLocationMap(horizontalPadding, mapHeight, isTablet),
 
                 const SizedBox(height: 16),
 
@@ -826,76 +973,232 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
     );
   }
 
-  List<Widget> _buildActionButtons(BuildContext context, bool isTablet) {
-    return [
-      Expanded(
-        child: OutlinedButton.icon(
-          style: OutlinedButton.styleFrom(
-            foregroundColor: const Color(0xFF3B82F6),
-            side: const BorderSide(color: Color(0xFF3B82F6)),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
-            padding: EdgeInsets.symmetric(vertical: isTablet ? 16 : 12),
-          ),
-          onPressed: () => _showQRScanner(context),
-          icon: const Icon(Icons.qr_code_scanner_rounded, size: 20),
-          label: Text(
-            "Scan QR",
-            style: TextStyle(
-              fontSize: isTablet ? 16 : 14,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
+  Widget _buildLiveLocationMap(double horizontalPadding, double mapHeight, bool isTablet) {
+    return Container(
+      margin: EdgeInsets.symmetric(horizontal: horizontalPadding),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Colors.white, Color(0xFFFAFBFF)],
         ),
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.08),
+            blurRadius: 20,
+            offset: const Offset(0, 4),
+          ),
+        ],
       ),
-      SizedBox(width: isTablet ? 12 : 8),
-      Expanded(
-        child: OutlinedButton.icon(
-          style: OutlinedButton.styleFrom(
-            foregroundColor: const Color(0xFFF59E0B),
-            side: const BorderSide(color: Color(0xFFF59E0B)),
-            shape: RoundedRectangleBorder(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(
+                Icons.map_rounded,
+                color: Color(0xFF3B82F6),
+                size: 20,
+              ),
+              const SizedBox(width: 8),
+              const Text(
+                "Live Location",
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFF1E293B),
+                ),
+              ),
+              const Spacer(),
+              const Icon(
+                Icons.access_time_rounded,
+                color: Color(0xFF64748B),
+                size: 16,
+              ),
+              const SizedBox(width: 4),
+              Text(
+                "ETA: $_eta",
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: Color(0xFF64748B),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Container(
+            height: mapHeight,
+            decoration: BoxDecoration(
+              color: const Color(0xFFF1F5F9),
               borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: const Color(0xFFE2E8F0)),
             ),
-            padding: EdgeInsets.symmetric(vertical: isTablet ? 16 : 12),
-          ),
-          onPressed: () => _showReportDelayModal(context),
-          icon: const Icon(Icons.report_problem_rounded, size: 20),
-          label: Text(
-            "Report Delay",
-            style: TextStyle(
-              fontSize: isTablet ? 16 : 14,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ),
-      ),
-      SizedBox(width: isTablet ? 12 : 8),
-      Expanded(
-        child: ElevatedButton.icon(
-          style: ElevatedButton.styleFrom(
-            backgroundColor: const Color(0xFF10B981),
-            foregroundColor: Colors.white,
-            elevation: 0,
-            shape: RoundedRectangleBorder(
+            child: ClipRRect(
               borderRadius: BorderRadius.circular(12),
+              child: _courierLocation != null && _deliveryRoute.isNotEmpty
+                  ? RealtimeLocationMap(
+                      courierLocation: _courierLocation!,
+                      deliveryRoute: _deliveryRoute,
+                      pickupLocation: _deliveryRoute.first,
+                      destinationLocation: _deliveryRoute.last,
+                      progress: _progress,
+                      calculateDistance: _calculateDistance,
+                    )
+                  : const Center(
+                      child: Text(
+                        'Loading map...',
+                        style: TextStyle(
+                          color: Color(0xFF64748B),
+                        ),
+                      ),
+                    ),
             ),
-            padding: EdgeInsets.symmetric(vertical: isTablet ? 16 : 12),
           ),
-          onPressed: () => _showDeliveryConfirmationModal(context),
-          icon: const Icon(Icons.check_circle_rounded, size: 20),
-          label: Text(
-            "Mark Delivered",
-            style: TextStyle(
-              fontSize: isTablet ? 16 : 14,
-              fontWeight: FontWeight.w600,
+          // Progress indicator
+          if (_routeInfo != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 12),
+              child: Column(
+                children: [
+                  LinearProgressIndicator(
+                    value: _progress, // Static progress value
+                    backgroundColor: const Color(0xFFE2E8F0),
+                    valueColor: AlwaysStoppedAnimation<Color>(_getStatusColor(_status)),
+                    minHeight: 6,
+                    borderRadius: BorderRadius.circular(3),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        '${(_progress * 100).toStringAsFixed(1)}% Complete',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Color(0xFF64748B),
+                        ),
+                      ),
+                      Text(
+                        '${_routeInfo!['distance']} km • ${_routeInfo!['duration']} min',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Color(0xFF64748B),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Courier positioned 1km from pickup',
+                    style: TextStyle(
+                      fontSize: 10,
+                      color: const Color(0xFF64748B).withOpacity(0.7),
+                      fontStyle: FontStyle.italic,
+                    ),
+                  ),
+                ],
+              ),
             ),
-          ),
-        ),
+        ],
       ),
-    ];
+    );
   }
+
+  List<Widget> _buildActionButtons(BuildContext context, bool isTablet) {
+  final bool isDelivered = _status.toLowerCase() == 'delivered';
+  final bool isDelayed = _status.toLowerCase() == 'delayed';
+  
+  return [
+    Expanded(
+      child: OutlinedButton.icon(
+        style: OutlinedButton.styleFrom(
+          foregroundColor: isDelivered 
+              ? const Color(0xFF94A3B8)
+              : const Color(0xFF3B82F6),
+          side: BorderSide(
+            color: isDelivered
+                ? const Color(0xFFE2E8F0)
+                : const Color(0xFF3B82F6),
+          ),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+          padding: EdgeInsets.symmetric(vertical: isTablet ? 16 : 12),
+        ),
+        onPressed: isDelivered ? null : () => _showQRScanner(context),
+        icon: Icon(Icons.qr_code_scanner_rounded, 
+            size: 20, 
+            color: isDelivered ? const Color(0xFF94A3B8) : const Color(0xFF3B82F6)),
+        label: Text(
+          "Scan QR",
+          style: TextStyle(
+            fontSize: isTablet ? 16 : 14,
+            fontWeight: FontWeight.w600,
+            color: isDelivered ? const Color(0xFF94A3B8) : const Color(0xFF3B82F6),
+          ),
+        ),
+      ),
+    ),
+    SizedBox(width: isTablet ? 12 : 8),
+    Expanded(
+      child: OutlinedButton.icon(
+        style: OutlinedButton.styleFrom(
+          foregroundColor: (isDelivered || isDelayed) 
+              ? const Color(0xFF94A3B8)
+              : const Color(0xFFF59E0B),
+          side: BorderSide(
+            color: (isDelivered || isDelayed)
+                ? const Color(0xFFE2E8F0)
+                : const Color(0xFFF59E0B),
+          ),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+          padding: EdgeInsets.symmetric(vertical: isTablet ? 16 : 12),
+        ),
+        onPressed: (isDelivered || isDelayed) ? null : () => _showReportDelayModal(context),
+        icon: Icon(Icons.report_problem_rounded, 
+            size: 20, 
+            color: (isDelivered || isDelayed) ? const Color(0xFF94A3B8) : const Color(0xFFF59E0B)),
+        label: Text(
+          "Report Delay",
+          style: TextStyle(
+            fontSize: isTablet ? 16 : 14,
+            fontWeight: FontWeight.w600,
+            color: (isDelivered || isDelayed) ? const Color(0xFF94A3B8) : const Color(0xFFF59E0B),
+          ),
+        ),
+      ),
+    ),
+    SizedBox(width: isTablet ? 12 : 8),
+    Expanded(
+      child: ElevatedButton.icon(
+        style: ElevatedButton.styleFrom(
+          backgroundColor: (isDelivered || isDelayed) 
+              ? const Color(0xFF94A3B8)
+              : const Color(0xFF10B981),
+          foregroundColor: Colors.white,
+          elevation: 0,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+          padding: EdgeInsets.symmetric(vertical: isTablet ? 16 : 12),
+        ),
+        onPressed: (isDelivered || isDelayed) ? null : () => _showDeliveryConfirmationModal(context),
+        icon: const Icon(Icons.check_circle_rounded, size: 20),
+        label: Text(
+          "Mark Delivered",
+          style: TextStyle(
+            fontSize: isTablet ? 16 : 14,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ),
+    ),
+  ];
+}
 
   Widget _buildDetailRow(IconData icon, String text, String value) {
     return Padding(
@@ -1096,6 +1399,14 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
   }
 
   void _showReportDelayModal(BuildContext context) {
+    final bool isDelivered = _status.toLowerCase() == 'delivered';
+    final bool isDelayed = _status.toLowerCase() == 'delayed';
+    
+    if (isDelivered || isDelayed) {
+      _showErrorModal('Cannot report delay for ${isDelivered ? 'delivered' : 'already delayed'} cargo.');
+      return;
+    }
+
     final reasonController = TextEditingController();
 
     showModalBottomSheet(
@@ -1368,6 +1679,13 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
   }
 
   void _showDeliveryConfirmationModal(BuildContext context) {
+    final bool isDelivered = _status.toLowerCase() == 'delivered';
+    
+    if (isDelivered) {
+      _showErrorModal('This cargo has already been delivered.');
+      return;
+    }
+
     showDialog(
       context: context,
       builder: (BuildContext context) {
@@ -1503,40 +1821,42 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
   }
 }
 
-class LiveMapWidget extends StatelessWidget {
-  final LatLng? truckLocation;
+// New Realtime Location Map Widget
+class RealtimeLocationMap extends StatelessWidget {
+  final LatLng courierLocation;
   final List<LatLng> deliveryRoute;
-  final List<LatLng> ports;
-  final VoidCallback? onTruckTap;
+  final LatLng pickupLocation;
+  final LatLng destinationLocation;
+  final double progress;
+  final double Function(LatLng, LatLng) calculateDistance;
 
-  const LiveMapWidget({
+  const RealtimeLocationMap({
     super.key,
-    this.truckLocation,
+    required this.courierLocation,
     required this.deliveryRoute,
-    required this.ports,
-    this.onTruckTap,
+    required this.pickupLocation,
+    required this.destinationLocation,
+    required this.progress,
+    required this.calculateDistance,
   });
 
   @override
   Widget build(BuildContext context) {
-    final LatLng currentTruckLocation = truckLocation ?? const LatLng(10.3157, 123.8854);
-
     return SizedBox(
       width: double.infinity,
       height: double.infinity,
       child: FlutterMap(
         options: MapOptions(
-          initialCenter: currentTruckLocation,
+          initialCenter: courierLocation,
           initialZoom: 10.0,
-          minZoom: 5.0,
-          maxZoom: 18.0,
-          interactiveFlags: InteractiveFlag.pinchZoom | InteractiveFlag.drag,
+          minZoom: 9.0,
+          maxZoom: 15.0,
+          interactiveFlags: InteractiveFlag.none,
         ),
         children: [
           TileLayer(
             urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
             userAgentPackageName: 'com.example.cargo_app',
-            maxNativeZoom: 19,
           ),
           
           // Delivery route
@@ -1547,51 +1867,91 @@ class LiveMapWidget extends StatelessWidget {
                   points: deliveryRoute,
                   color: const Color(0xFF3B82F6).withOpacity(0.7),
                   strokeWidth: 4.0,
-                  borderColor: Colors.white.withOpacity(0.5),
-                  borderStrokeWidth: 1.0,
+                ),
+                // Completed route portion
+                Polyline(
+                  points: _getCompletedRoutePortion(),
+                  color: const Color(0xFF10B981),
+                  strokeWidth: 4.0,
                 ),
               ],
             ),
           
           MarkerLayer(
             markers: [
+              // Pickup location
               Marker(
-                point: ports[0],
-                width: 80,
-                height: 80,
-                child: const MapMarker(
-                  label: "Manila Port",
-                  color: Color(0xFF10B981),
-                ),
-              ),
-              Marker(
-                point: ports[1],
-                width: 80,
-                height: 80,
-                child: const MapMarker(
-                  label: "Cebu Port",
-                  color: Color(0xFF3B82F6),
-                ),
-              ),
-              Marker(
-                point: ports[2],
-                width: 80,
-                height: 80,
-                child: const MapMarker(
-                  label: "Batangas Port",
-                  color: Color(0xFF10B981),
+                point: pickupLocation,
+                width: 32,
+                height: 32,
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    shape: BoxShape.circle,
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.3),
+                        blurRadius: 6,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],
+                  ),
+                  child: const Icon(
+                    Icons.location_on,
+                    color: Color(0xFF10B981),
+                    size: 16,
+                  ),
                 ),
               ),
               
+              // Destination location
               Marker(
-                point: currentTruckLocation,
-                width: 80,
-                height: 80,
-                child: MapMarker(
-                  label: "Your Truck",
-                  color: const Color(0xFFF59E0B),
-                  isTruck: true,
-                  onTap: onTruckTap,
+                point: destinationLocation,
+                width: 32,
+                height: 32,
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    shape: BoxShape.circle,
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.3),
+                        blurRadius: 6,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],
+                  ),
+                  child: const Icon(
+                    Icons.flag,
+                    color: Color(0xFFEF4444),
+                    size: 16,
+                  ),
+                ),
+              ),
+              
+              // Courier location (minimized)
+              Marker(
+                point: courierLocation,
+                width: 40, // Reduced from 60
+                height: 40, // Reduced from 60
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF59E0B),
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.white, width: 2),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.4),
+                        blurRadius: 8,
+                        offset: const Offset(0, 3),
+                      ),
+                    ],
+                  ),
+                  child: const Icon(
+                    Icons.local_shipping,
+                    color: Colors.white,
+                    size: 18, // Reduced from 24
+                  ),
                 ),
               ),
             ],
@@ -1600,83 +1960,43 @@ class LiveMapWidget extends StatelessWidget {
       ),
     );
   }
-}
 
-class MapMarker extends StatelessWidget {
-  final String label;
-  final Color color;
-  final IconData icon;
-  final bool isTruck;
-  final VoidCallback? onTap;
+  List<LatLng> _getCompletedRoutePortion() {
+    if (progress >= 1.0) return deliveryRoute;
+    
+    final completedDistance = _calculateTotalRouteDistance() * progress;
+    double accumulatedDistance = 0.0;
+    List<LatLng> completedPoints = [deliveryRoute.first];
+    
+    for (int i = 0; i < deliveryRoute.length - 1; i++) {
+      final segmentDistance = calculateDistance(
+        deliveryRoute[i], 
+        deliveryRoute[i + 1]
+      );
+      
+      if (accumulatedDistance + segmentDistance <= completedDistance) {
+        completedPoints.add(deliveryRoute[i + 1]);
+        accumulatedDistance += segmentDistance;
+      } else {
+        final ratio = (completedDistance - accumulatedDistance) / segmentDistance;
+        final lastPoint = LatLng(
+          deliveryRoute[i].latitude + (deliveryRoute[i + 1].latitude - deliveryRoute[i].latitude) * ratio,
+          deliveryRoute[i].longitude + (deliveryRoute[i + 1].longitude - deliveryRoute[i].longitude) * ratio,
+        );
+        completedPoints.add(lastPoint);
+        break;
+      }
+    }
+    
+    return completedPoints;
+  }
 
-  const MapMarker({
-    super.key,
-    required this.label,
-    required this.color,
-    this.icon = Icons.location_on_rounded,
-    this.isTruck = false,
-    this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(4),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.1),
-                  blurRadius: 4,
-                  offset: const Offset(0, 1),
-                ),
-              ],
-            ),
-            child: Text(
-              label,
-              style: const TextStyle(
-                fontSize: 10,
-                fontWeight: FontWeight.w600,
-                color: Color(0xFF1E293B),
-              ),
-            ),
-          ),
-          if (isTruck)
-            Container(
-              padding: const EdgeInsets.all(4),
-              decoration: BoxDecoration(
-                color: color,
-                shape: BoxShape.circle,
-                border: Border.all(color: Colors.white, width: 2),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.3),
-                    blurRadius: 6,
-                    offset: const Offset(0, 2),
-                  ),
-                ],
-              ),
-              child: const Icon(
-                Icons.local_shipping_rounded,
-                color: Colors.white,
-                size: 20,
-              ),
-            )
-          else
-            Icon(
-              icon,
-              color: color,
-              size: 24,
-            ),
-        ],
-      ),
-    );
+  double _calculateTotalRouteDistance() {
+    double total = 0.0;
+    for (int i = 0; i < deliveryRoute.length - 1; i++) {
+      total += calculateDistance(deliveryRoute[i], deliveryRoute[i + 1]);
+    }
+    return total;
   }
 }
 

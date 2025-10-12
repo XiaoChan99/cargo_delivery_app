@@ -98,10 +98,32 @@ class _ContainerDetailsPageState extends State<ContainerDetailsPage> {
     return _cargoData?['destination'] ?? 'Delivery Point';
   }
 
+  // Check if cargo is cancelled - FIXED VERSION
+  bool get _isCancelled {
+    final status = _status.toLowerCase();
+    return status == 'cancelled' || 
+           _cargoData?['is_cancelled'] == true ||
+           _cargoData?['cancelled'] == true ||
+           widget.containerData['is_cancelled'] == true ||
+           widget.containerData['cancelled'] == true;
+  }
+
   Future<void> _updateCargoStatus(String newStatus) async {
     // Prevent multiple simultaneous updates
     if (_isUpdatingStatus) {
       _showErrorModal('Please wait, update in progress...');
+      return;
+    }
+
+    // Check if cargo is cancelled - ENHANCED CHECK
+    if (_isCancelled) {
+      _showErrorModal('This delivery has been cancelled and cannot be updated.');
+      return;
+    }
+
+    // Prevent starting delivery if cargo is cancelled
+    if (newStatus == 'in-progress' && _isCancelled) {
+      _showErrorModal('Cannot start delivery - this task has been cancelled.');
       return;
     }
 
@@ -196,18 +218,28 @@ class _ContainerDetailsPageState extends State<ContainerDetailsPage> {
       // Refresh the data
       await _initializeData();
       
-      _showSuccessModal('Status updated to ${_getStatusText(newStatus)}!');
+      // Show success modal for starting delivery
+      if (newStatus == 'in-progress') {
+        _showDeliveryStartedModal();
+      } else {
+        _showSuccessModal('Status updated to ${_getStatusText(newStatus)}!');
+      }
       
       // Navigate to live location page if starting delivery
       if (newStatus == 'in-progress') {
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(
-            builder: (context) => LiveLocationPage(
-              cargoData: _cargoData!,
-            ),
-          ),
-        );
+        // Delay navigation to show the success modal first
+        Future.delayed(const Duration(seconds: 2), () {
+          if (mounted) {
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(
+                builder: (context) => LiveLocationPage(
+                  cargoData: _cargoData!,
+                ),
+              ),
+            );
+          }
+        });
       }
     } catch (e) {
       print('Error updating cargo status: $e');
@@ -217,6 +249,135 @@ class _ContainerDetailsPageState extends State<ContainerDetailsPage> {
         _isUpdatingStatus = false;
       });
     }
+  }
+
+  // NEW METHOD: Show delivery started success modal
+  void _showDeliveryStartedModal() {
+    showDialog(
+      context: context,
+      barrierDismissible: false, // Prevent dismissing by tapping outside
+      builder: (BuildContext context) {
+        return Dialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          child: Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Colors.white, Color(0xFFFAFBFF)],
+              ),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Success Icon with Animation
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF10B981).withOpacity(0.1),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.play_circle_fill_rounded,
+                    color: Color(0xFF10B981),
+                    size: 50,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  "Delivery Started!",
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 22,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF1E293B),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  "You have successfully started the delivery for Container $_containerNo",
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    color: Color(0xFF64748B),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                // Additional Info Section
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF0F9FF),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFFE0F2FE)),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.info_outline_rounded,
+                        color: Colors.blue[600],
+                        size: 16,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          "You will be redirected to the live tracking page shortly",
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.blue[600],
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 24),
+                ElevatedButton(
+                  onPressed: () {
+                    Navigator.of(context).pop();
+                    Navigator.pushReplacement(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => LiveLocationPage(
+                          cargoData: _cargoData!,
+                        ),
+                      ),
+                    );
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF10B981),
+                    foregroundColor: Colors.white,
+                    minimumSize: const Size(150, 48),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    elevation: 0,
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.navigation_rounded, size: 20),
+                      SizedBox(width: 8),
+                      Text(
+                        'Continue to Tracking',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
   void _showAlreadyConfirmedModal() {
@@ -441,14 +602,13 @@ class _ContainerDetailsPageState extends State<ContainerDetailsPage> {
     return SingleChildScrollView(
       child: Column(
         children: [
-          // Header with back button - Fixed consistent height
           Container(
             width: double.infinity,
             padding: EdgeInsets.fromLTRB(
               24,
-              MediaQuery.of(context).padding.top + 16,
+              MediaQuery.of(context).padding.top + 8, // Reduced from 16 to 8
               24,
-              24,
+              16, // Reduced from 24 to 16
             ),
             decoration: const BoxDecoration(
               gradient: LinearGradient(
@@ -494,7 +654,7 @@ class _ContainerDetailsPageState extends State<ContainerDetailsPage> {
                 ),
               ],
             ),
-          ),
+        ),
 
           const SizedBox(height: 16),
 
@@ -618,6 +778,38 @@ class _ContainerDetailsPageState extends State<ContainerDetailsPage> {
                           ),
                         ],
                       ),
+                      // Show cancellation warning if applicable
+                      if (_isCancelled)
+                        Container(
+                          width: double.infinity,
+                          margin: const EdgeInsets.only(top: 8),
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFFEF3F2),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: const Color(0xFFFECDCA)),
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(
+                                Icons.warning_amber_rounded,
+                                color: Colors.orange[700],
+                                size: 16,
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  "This delivery has been cancelled and cannot be started or updated.",
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.orange[700],
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                     ],
                   ),
                 ),
@@ -715,7 +907,7 @@ class _ContainerDetailsPageState extends State<ContainerDetailsPage> {
                       ),
                       padding: const EdgeInsets.symmetric(vertical: 16),
                     ),
-                    onPressed: () {
+                    onPressed: _isCancelled ? null : () {
                       Navigator.push(
                         context,
                         MaterialPageRoute(
@@ -760,16 +952,16 @@ class _ContainerDetailsPageState extends State<ContainerDetailsPage> {
                                 text: "Report Issue",
                                 isPrimary: false,
                                 color: const Color(0xFFF59E0B),
-                                onPressed: () => _showReportIssueModal(),
+                                onPressed: _isCancelled ? null : () => _showReportIssueModal(),
                               ),
                               const SizedBox(height: 8),
-                              if (currentStatus != 'in-progress' && currentStatus != 'in_transit' && currentStatus != 'delivered' && currentStatus != 'cancelled')
+                              if (currentStatus != 'in-progress' && currentStatus != 'in_transit' && currentStatus != 'delivered' && !_isCancelled)
                                 _buildActionButton(
                                   icon: Icons.play_arrow_rounded,
                                   text: _isUpdatingStatus ? "Starting..." : "Start Delivery",
                                   isPrimary: true,
                                   color: const Color(0xFF3B82F6),
-                                  onPressed: _isUpdatingStatus ? null : () => _updateCargoStatus('in-progress'),
+                                  onPressed: _isUpdatingStatus || _isCancelled ? null : () => _updateCargoStatus('in-progress'),
                                 ),
                             ],
                           )
@@ -781,18 +973,18 @@ class _ContainerDetailsPageState extends State<ContainerDetailsPage> {
                                   text: "Report Issue",
                                   isPrimary: false,
                                   color: const Color(0xFFF59E0B),
-                                  onPressed: () => _showReportIssueModal(),
+                                  onPressed: _isCancelled ? null : () => _showReportIssueModal(),
                                 ),
                               ),
                               const SizedBox(width: 8),
-                              if (currentStatus != 'in-progress' && currentStatus != 'in_transit' && currentStatus != 'delivered' && currentStatus != 'cancelled')
+                              if (currentStatus != 'in-progress' && currentStatus != 'in_transit' && currentStatus != 'delivered' && !_isCancelled)
                                 Expanded(
                                   child: _buildActionButton(
                                     icon: Icons.play_arrow_rounded,
                                     text: _isUpdatingStatus ? "Starting..." : "Start Delivery",
                                     isPrimary: true,
                                     color: const Color(0xFF3B82F6),
-                                    onPressed: _isUpdatingStatus ? null : () => _updateCargoStatus('in-progress'),
+                                    onPressed: _isUpdatingStatus || _isCancelled ? null : () => _updateCargoStatus('in-progress'),
                                   ),
                                 ),
                             ],
@@ -809,46 +1001,46 @@ class _ContainerDetailsPageState extends State<ContainerDetailsPage> {
                     return isSmallScreen
                         ? Column(
                             children: [
-                              if (currentStatus != 'cancelled' && currentStatus != 'delivered')
+                              if (!_isCancelled && currentStatus != 'delivered')
                                 _buildActionButton(
                                   icon: Icons.cancel_rounded,
                                   text: "Cancel Task",
                                   isPrimary: false,
                                   color: const Color(0xFFEF4444),
-                                  onPressed: () => _showCancelConfirmation(),
+                                  onPressed: _isCancelled ? null : () => _showCancelConfirmation(),
                                 ),
                               const SizedBox(height: 8),
-                              if (currentStatus == 'in-progress' || currentStatus == 'in_transit')
+                              if ((currentStatus == 'in-progress' || currentStatus == 'in_transit') && !_isCancelled)
                                 _buildActionButton(
                                   icon: Icons.check_circle_rounded,
                                   text: _isUpdatingStatus ? "Confirming..." : "Confirm Delivery",
                                   isPrimary: true,
                                   color: const Color(0xFF10B981),
-                                  onPressed: _isUpdatingStatus ? null : () => _updateCargoStatus('delivered'),
+                                  onPressed: _isUpdatingStatus || _isCancelled ? null : () => _updateCargoStatus('delivered'),
                                 ),
                             ],
                           )
                         : Row(
                             children: [
-                              if (currentStatus != 'cancelled' && currentStatus != 'delivered')
+                              if (!_isCancelled && currentStatus != 'delivered')
                                 Expanded(
                                   child: _buildActionButton(
                                     icon: Icons.cancel_rounded,
                                     text: "Cancel Task",
                                     isPrimary: false,
                                     color: const Color(0xFFEF4444),
-                                    onPressed: () => _showCancelConfirmation(),
+                                    onPressed: _isCancelled ? null : () => _showCancelConfirmation(),
                                   ),
                                 ),
-                              if (currentStatus != 'cancelled' && currentStatus != 'delivered') const SizedBox(width: 8),
-                              if (currentStatus == 'in-progress' || currentStatus == 'in_transit')
+                              if (!_isCancelled && currentStatus != 'delivered') const SizedBox(width: 8),
+                              if ((currentStatus == 'in-progress' || currentStatus == 'in_transit') && !_isCancelled)
                                 Expanded(
                                   child: _buildActionButton(
                                     icon: Icons.check_circle_rounded,
                                     text: _isUpdatingStatus ? "Confirming..." : "Confirm Delivery",
                                     isPrimary: true,
                                     color: const Color(0xFF10B981),
-                                    onPressed: _isUpdatingStatus ? null : () => _updateCargoStatus('delivered'),
+                                    onPressed: _isUpdatingStatus || _isCancelled ? null : () => _updateCargoStatus('delivered'),
                                   ),
                                 ),
                             ],
@@ -1043,8 +1235,8 @@ class _ContainerDetailsPageState extends State<ContainerDetailsPage> {
               label,
               style: const TextStyle(
                 fontSize: 14,
-                color: Color(0xFF64748B),
                 fontWeight: FontWeight.w500,
+                color: Color(0xFF64748B),
               ),
             ),
           ),
@@ -1071,49 +1263,50 @@ class _ContainerDetailsPageState extends State<ContainerDetailsPage> {
     required Color color,
     required VoidCallback? onPressed,
   }) {
-    return SizedBox(
-      width: double.infinity,
-      child: isPrimary
-          ? ElevatedButton.icon(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: color,
-                foregroundColor: Colors.white,
-                elevation: 0,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                padding: const EdgeInsets.symmetric(vertical: 16),
-              ),
-              onPressed: onPressed,
-              icon: Icon(icon, size: 20),
-              label: Text(
-                text,
-                style: const TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            )
-          : OutlinedButton.icon(
-              style: OutlinedButton.styleFrom(
-                foregroundColor: color,
-                side: BorderSide(color: color),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                padding: const EdgeInsets.symmetric(vertical: 16),
-              ),
-              onPressed: onPressed,
-              icon: Icon(icon, size: 20),
-              label: Text(
-                text,
-                style: const TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ),
+    return ElevatedButton.icon(
+      style: ElevatedButton.styleFrom(
+        backgroundColor: isPrimary ? color : Colors.white,
+        foregroundColor: isPrimary ? Colors.white : color,
+        elevation: 0,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: isPrimary ? BorderSide.none : BorderSide(color: color, width: 1.5),
+        ),
+        padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 16),
+      ),
+      onPressed: onPressed,
+      icon: Icon(
+        icon,
+        size: 20,
+      ),
+      label: Text(
+        text,
+        style: TextStyle(
+          fontSize: 14,
+          fontWeight: FontWeight.w600,
+          color: isPrimary ? Colors.white : color,
+        ),
+      ),
     );
+  }
+
+  IconData _getStatusIcon(String status) {
+    switch (status.toLowerCase()) {
+      case 'delivered':
+        return Icons.check_circle_rounded;
+      case 'pending':
+      case 'scheduled':
+        return Icons.schedule_rounded;
+      case 'delayed':
+      case 'cancelled':
+        return Icons.cancel_rounded;
+      case 'in-progress':
+      case 'in_transit':
+      case 'assigned':
+        return Icons.local_shipping_rounded;
+      default:
+        return Icons.inventory_2_rounded;
+    }
   }
 
   void _showReportIssueModal() {
@@ -1149,7 +1342,8 @@ class _ContainerDetailsPageState extends State<ContainerDetailsPage> {
                 ),
                 const SizedBox(height: 16),
                 const Text(
-                  "Report Issue",
+                  'Report Issue',
+                  textAlign: TextAlign.center,
                   style: TextStyle(
                     fontSize: 20,
                     fontWeight: FontWeight.w700,
@@ -1158,7 +1352,7 @@ class _ContainerDetailsPageState extends State<ContainerDetailsPage> {
                 ),
                 const SizedBox(height: 8),
                 const Text(
-                  "What issue would you like to report?",
+                  'Please contact support to report any issues with this delivery.',
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     fontSize: 14,
@@ -1166,41 +1360,24 @@ class _ContainerDetailsPageState extends State<ContainerDetailsPage> {
                   ),
                 ),
                 const SizedBox(height: 24),
-                Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton(
-                        onPressed: () => Navigator.of(context).pop(),
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: const Color(0xFF64748B),
-                          side: const BorderSide(color: Color(0xFFE2E8F0)),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                        ),
-                        child: const Text("Cancel"),
-                      ),
+                ElevatedButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFF59E0B),
+                    foregroundColor: Colors.white,
+                    minimumSize: const Size(120, 48),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: ElevatedButton(
-                        onPressed: () {
-                          Navigator.of(context).pop();
-                          _showSuccessModal("Issue reported successfully!");
-                        },
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFFF59E0B),
-                          foregroundColor: Colors.white,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                        ),
-                        child: const Text("Report"),
-                      ),
+                    elevation: 0,
+                  ),
+                  child: const Text(
+                    'OK',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
                     ),
-                  ],
+                  ),
                 ),
               ],
             ),
@@ -1236,14 +1413,15 @@ class _ContainerDetailsPageState extends State<ContainerDetailsPage> {
                     shape: BoxShape.circle,
                   ),
                   child: const Icon(
-                    Icons.warning_rounded,
+                    Icons.warning_amber_rounded,
                     color: Color(0xFFEF4444),
                     size: 40,
                   ),
                 ),
                 const SizedBox(height: 16),
                 const Text(
-                  "Cancel Delivery",
+                  'Cancel Delivery?',
+                  textAlign: TextAlign.center,
                   style: TextStyle(
                     fontSize: 20,
                     fontWeight: FontWeight.w700,
@@ -1252,7 +1430,7 @@ class _ContainerDetailsPageState extends State<ContainerDetailsPage> {
                 ),
                 const SizedBox(height: 8),
                 const Text(
-                  "Are you sure you want to cancel this delivery? This action cannot be undone.",
+                  'Are you sure you want to cancel this delivery task? This action cannot be undone.',
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     fontSize: 14,
@@ -1271,9 +1449,9 @@ class _ContainerDetailsPageState extends State<ContainerDetailsPage> {
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(12),
                           ),
-                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          padding: const EdgeInsets.symmetric(vertical: 16),
                         ),
-                        child: const Text("Go Back"),
+                        child: const Text('No, Keep'),
                       ),
                     ),
                     const SizedBox(width: 12),
@@ -1289,9 +1467,9 @@ class _ContainerDetailsPageState extends State<ContainerDetailsPage> {
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(12),
                           ),
-                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          padding: const EdgeInsets.symmetric(vertical: 16),
                         ),
-                        child: const Text("Cancel Task"),
+                        child: const Text('Yes, Cancel'),
                       ),
                     ),
                   ],
@@ -1336,21 +1514,13 @@ class _ContainerDetailsPageState extends State<ContainerDetailsPage> {
                   ),
                 ),
                 const SizedBox(height: 16),
-                const Text(
-                  "Success!",
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.w700,
-                    color: Color(0xFF1E293B),
-                  ),
-                ),
-                const SizedBox(height: 8),
                 Text(
                   message,
                   textAlign: TextAlign.center,
                   style: const TextStyle(
-                    fontSize: 14,
-                    color: Color(0xFF64748B),
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF1E293B),
                   ),
                 ),
                 const SizedBox(height: 24),
@@ -1413,21 +1583,13 @@ class _ContainerDetailsPageState extends State<ContainerDetailsPage> {
                   ),
                 ),
                 const SizedBox(height: 16),
-                const Text(
-                  "Error",
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.w700,
-                    color: Color(0xFF1E293B),
-                  ),
-                ),
-                const SizedBox(height: 8),
                 Text(
                   message,
                   textAlign: TextAlign.center,
                   style: const TextStyle(
-                    fontSize: 14,
-                    color: Color(0xFF64748B),
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF1E293B),
                   ),
                 ),
                 const SizedBox(height: 24),
@@ -1457,26 +1619,6 @@ class _ContainerDetailsPageState extends State<ContainerDetailsPage> {
       },
     );
   }
-
-  IconData _getStatusIcon(String status) {
-    switch (status.toLowerCase()) {
-      case 'delivered':
-        return Icons.check_circle_rounded;
-      case 'pending':
-      case 'scheduled':
-        return Icons.schedule_rounded;
-      case 'delayed':
-        return Icons.schedule_rounded;
-      case 'cancelled':
-        return Icons.cancel_rounded;
-      case 'in-progress':
-      case 'in_transit':
-      case 'assigned':
-        return Icons.local_shipping_rounded;
-      default:
-        return Icons.help_rounded;
-    }
-  }
 }
 
 class OSMService {
@@ -1485,14 +1627,18 @@ class OSMService {
       // Simulate API call delay
       await Future.delayed(const Duration(seconds: 2));
       
-      // Mock route data - in real app, you would call OSM API here
+      // Mock response with realistic data
       return {
         'distance': '15.3',
         'duration': '32',
         'trafficStatus': 'Normal',
+        'coordinates': [
+          {'lat': 40.7128, 'lng': -74.0060}, // NYC
+          {'lat': 40.7589, 'lng': -73.9851}, // Midtown
+        ]
       };
     } catch (e) {
-      throw Exception('Failed to get route info: $e');
+      throw Exception('Failed to fetch route info: $e');
     }
   }
 }

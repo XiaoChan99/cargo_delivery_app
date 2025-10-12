@@ -647,7 +647,10 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
               );
               break;
             case 3:
-              // Already on Settings page
+              Navigator.pushReplacement(
+                context,
+                MaterialPageRoute(builder: (context) => const SettingsPage()),
+              );
               break;
           }
         },

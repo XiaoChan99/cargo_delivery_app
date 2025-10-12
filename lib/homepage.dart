@@ -9,7 +9,7 @@ import 'settings_page.dart';
 import 'container_details_page.dart';
 import 'notifications_page.dart';
 import 'live_location_page.dart';
-import 'analytics_page.dart'; // Add analytics page import
+import 'analytics_page.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -30,12 +30,12 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
   bool _hasUnreadNotifications = false;
   StreamSubscription? _notificationSubscription;
 
-  // Image slider
+  // Image slider - Updated to use local assets
   final PageController _pageController = PageController();
   final List<String> _sliderImages = [
-    'https://images.unsplash.com/photo-1601055929638-63c8b8e7cdeb?w=800&auto=format&fit=crop&q=60&ixlib=rb-4.0.3',
-    'https://images.unsplash.com/photo-1586528116311-ad8dd3c8310d?w=800&auto=format&fit=crop&q=60&ixlib=rb-4.0.3',
-    'https://images.unsplash.com/photo-1556742111-a301076d9dab?w=800&auto=format&fit=crop&q=60&ixlib=rb-4.0.3',
+    'assets/images/image1.png',
+    'assets/images/image2.png',
+    'assets/images/image3.png',
   ];
   int _currentPage = 0;
   Timer? _autoSlideTimer;
@@ -121,7 +121,6 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
     }
   }
 
-  // ...existing code...
   Future<void> _loadAvailableCargos() async {
     try {
       print('Loading available cargos...');
@@ -136,10 +135,18 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
           .get();
 
       Set<String> assignedCargoIds = {};
+      Set<String> cancelledCargoIds = {};
+      
       for (var doc in deliverySnapshot.docs) {
         var deliveryData = doc.data() as Map<String, dynamic>;
         if (deliveryData['cargo_id'] != null) {
           assignedCargoIds.add(deliveryData['cargo_id'].toString());
+          
+          // Check for cancelled deliveries
+          final status = deliveryData['status']?.toString().toLowerCase() ?? '';
+          if (status == 'cancelled') {
+            cancelledCargoIds.add(deliveryData['cargo_id'].toString());
+          }
         }
       }
 
@@ -148,8 +155,12 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
         var cargoData = doc.data() as Map<String, dynamic>;
         final status = cargoData['status']?.toString().toLowerCase() ?? 'pending';
 
-        // Only include cargos that are not assigned to any delivery and not delayed
-        if (!assignedCargoIds.contains(doc.id) && status != 'delayed') {
+        // Only include cargos that are:
+        // 1. Not assigned to any delivery AND not delayed
+        // 2. Not cancelled by the current courier
+        if (!assignedCargoIds.contains(doc.id) && 
+            status != 'delayed' &&
+            !cancelledCargoIds.contains(doc.id)) {
           Map<String, dynamic> combinedData = {
             'cargo_id': doc.id,
             'containerNo': 'CONT-${cargoData['item_number']?.toString() ?? 'N/A'}',
@@ -165,6 +176,7 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
             'item_number': cargoData['item_number'] ?? 0,
             'additional_info': cargoData['additional_info']?.toString() ?? '',
             'submanifest_id': cargoData['submanifest_id']?.toString() ?? '',
+            'is_cancelled': cancelledCargoIds.contains(doc.id), // Add cancellation status
           };
           availableCargos.add(combinedData);
         }
@@ -262,13 +274,41 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
     }
   }
 
-  // Accept a cargo delivery
   Future<void> _acceptCargoDelivery(Map<String, dynamic> cargoData) async {
     try {
       final user = _auth.currentUser;
       if (user == null) {
         _showErrorModal('User not authenticated');
         return;
+      }
+
+      // Check if cargo is cancelled
+      final bool isCancelled = cargoData['is_cancelled'] == true;
+      if (isCancelled) {
+        _showErrorModal('This delivery has been cancelled and cannot be accepted again.');
+        return;
+      }
+
+      // Check if cargo is already assigned to someone else
+      final deliveryCheck = await _firestore
+          .collection('CargoDelivery')
+          .where('cargo_id', isEqualTo: cargoData['cargo_id'])
+          .limit(1)
+          .get();
+
+      if (deliveryCheck.docs.isNotEmpty) {
+        final existingDelivery = deliveryCheck.docs.first.data();
+        final existingStatus = existingDelivery['status']?.toString().toLowerCase() ?? '';
+        
+        if (existingStatus == 'cancelled') {
+          _showErrorModal('This delivery has been cancelled and cannot be accepted.');
+          return;
+        }
+        
+        if (existingDelivery['courier_id'] != user.uid) {
+          _showErrorModal('This cargo has already been assigned to another courier.');
+          return;
+        }
       }
 
       // Create CargoDelivery document with correct field names
@@ -381,6 +421,8 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
         return 'Delivered';
       case 'delayed':
         return 'Delayed';
+      case 'cancelled':
+        return 'Cancelled';
       default:
         return status;
     }
@@ -401,6 +443,8 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
         return const Color(0xFF10B981);
       case 'delayed':
         return const Color(0xFFEF4444);
+      case 'cancelled':
+        return const Color(0xFF6B7280);
       default:
         return const Color(0xFF64748B);
     }
@@ -644,7 +688,7 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
               ),
             ),
 
-            // Profile Section (removed box shadow)
+            // Profile Section
             Container(
               margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
               padding: const EdgeInsets.all(20),
@@ -753,7 +797,7 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
 
             const SizedBox(height: 8),
 
-            // Image Slider
+            // Image Slider with FUTURE UPDATE text inside
             Container(
               margin: const EdgeInsets.symmetric(horizontal: 16),
               height: 150,
@@ -773,33 +817,65 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
                     itemBuilder: (context, index) {
                       return ClipRRect(
                         borderRadius: BorderRadius.circular(16),
-                        child: Image.network(
-                          _sliderImages[index],
-                          fit: BoxFit.cover,
-                          width: double.infinity,
-                          loadingBuilder: (context, child, loadingProgress) {
-                            if (loadingProgress == null) return child;
-                            return Container(
+                        child: Stack(
+                          children: [
+                            Image.asset(
+                              _sliderImages[index],
+                              fit: BoxFit.cover,
+                              width: double.infinity,
+                              errorBuilder: (context, error, stackTrace) {
+                                return Container(
+                                  decoration: BoxDecoration(
+                                    color: Colors.grey[300],
+                                    borderRadius: BorderRadius.circular(16),
+                                  ),
+                                  child: const Center(
+                                    child: Icon(Icons.error, color: Colors.grey),
+                                  ),
+                                );
+                              },
+                            ),
+                            // Gradient overlay for better text visibility
+                            Container(
                               decoration: BoxDecoration(
-                                color: Colors.grey[300],
                                 borderRadius: BorderRadius.circular(16),
+                                gradient: LinearGradient(
+                                  begin: Alignment.topCenter,
+                                  end: Alignment.bottomCenter,
+                                  colors: [
+                                    Colors.black.withOpacity(0.3),
+                                    Colors.transparent,
+                                    Colors.transparent,
+                                    Colors.black.withOpacity(0.3),
+                                  ],
+                                ),
                               ),
-                              child: const Center(
-                                child: CircularProgressIndicator(),
+                            ),
+                            // FUTURE UPDATE text positioned inside the slider
+                            const Positioned(
+                              top: 16,
+                              left: 0,
+                              right: 0,
+                              child: Center(
+                                child: Text(
+                                  "",
+                                  style: TextStyle(
+                                    fontSize: 20,
+                                    fontWeight: FontWeight.w800,
+                                    color: Colors.white,
+                                    letterSpacing: 1.5,
+                                    shadows: [
+                                      Shadow(
+                                        blurRadius: 10,
+                                        color: Colors.black,
+                                        offset: Offset(2, 2),
+                                      ),
+                                    ],
+                                  ),
+                                ),
                               ),
-                            );
-                          },
-                          errorBuilder: (context, error, stackTrace) {
-                            return Container(
-                              decoration: BoxDecoration(
-                                color: Colors.grey[300],
-                                borderRadius: BorderRadius.circular(16),
-                              ),
-                              child: const Center(
-                                child: Icon(Icons.error, color: Colors.grey),
-                              ),
-                            );
-                          },
+                            ),
+                          ],
                         ),
                       );
                     },
@@ -831,71 +907,85 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
 
             const SizedBox(height: 20),
 
-            // Cargos and Track Section (removed box shadow)
+            // All Four Sections in One Container - No background, no shadows
             Container(
               margin: const EdgeInsets.symmetric(horizontal: 16),
-              child: Row(
+              child: Column(
                 children: [
-                  Expanded(
-                    child: _buildActionCard(
-                      "Cargos",
-                      Icons.local_shipping,
-                      const Color(0xFF3B82F6),
-                      _availableCargos.length.toString(),
-                      () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(builder: (context) => const SchedulePage()),
-                        );
-                      },
-                    ),
+                  // First row: Cargos and Track
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _buildActionCard(
+                          "Cargos",
+                          Icons.local_shipping,
+                          const Color(0xFF3B82F6),
+                          _availableCargos.length.toString(),
+                          () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(builder: (context) => const SchedulePage()),
+                            );
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: _buildActionCard(
+                          "Track",
+                          Icons.track_changes,
+                          const Color(0xFF10B981),
+                          _inProgressDeliveries.length.toString(),
+                          () {
+                            if (_inProgressDeliveries.isNotEmpty) {
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(builder: (context) => const LiveMapPage()),
+                              );
+                            } else {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('No in-progress deliveries to track'),
+                                  backgroundColor: Color(0xFFF59E0B),
+                                ),
+                              );
+                            }
+                          },
+                        ),
+                      ),
+                    ],
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: _buildActionCard(
-                      "Track",
-                      Icons.track_changes,
-                      const Color(0xFF10B981),
-                      _inProgressDeliveries.length.toString(),
-                      () {
-                        if (_inProgressDeliveries.isNotEmpty) {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(builder: (context) => const LiveMapPage()),
-                          );
-                        } else {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('No in-progress deliveries to track'),
-                              backgroundColor: Color(0xFFF59E0B),
-                            ),
-                          );
-                        }
-                      },
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-            const SizedBox(height: 20),
-
-            // Order History and Performance Section (without Reports title)
-            Container(
-              margin: const EdgeInsets.symmetric(horizontal: 16),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: _buildReportItem("Order History", Icons.history, const Color(0xFF3B82F6)),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: _buildReportItem("Performance", Icons.assessment, const Color(0xFFF59E0B), onTap: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(builder: (context) => AnalyticsPage(userId: _currentUser!.uid)),
-                      );
-                    }),
+                  const SizedBox(height: 12),
+                  // Second row: Order History and Performance
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _buildActionCard(
+                          "Order History",
+                          Icons.history,
+                          const Color(0xFF3B82F6),
+                          "View",
+                          () {
+                            // Add navigation for Order History if needed
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: _buildActionCard(
+                          "Performance",
+                          Icons.assessment,
+                          const Color(0xFFF59E0B),
+                          "View",
+                          () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(builder: (context) => AnalyticsPage(userId: _currentUser!.uid)),
+                            );
+                          },
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),
@@ -937,8 +1027,12 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
       child: InkWell(
         borderRadius: BorderRadius.circular(16),
         onTap: onTap,
-        child: Padding(
+        child: Container(
           padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+          ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -981,50 +1075,12 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
               ),
               const SizedBox(height: 4),
               Text(
-                title == "Cargos" ? "Available for delivery" : "Track your cargo",
+                title == "Cargos" ? "Available for delivery" : 
+                title == "Track" ? "Track your cargo" :
+                title == "Order History" ? "View past orders" : "View performance",
                 style: const TextStyle(
                   fontSize: 12,
                   color: Color(0xFF64748B),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildReportItem(String title, IconData icon, Color color, {VoidCallback? onTap}) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFFE2E8F0)),
-      ),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          borderRadius: BorderRadius.circular(16),
-          onTap: onTap,
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: color.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Icon(icon, color: color, size: 20),
-              ),
-              const SizedBox(width: 8),
-              Text(
-                title,
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  color: color,
                 ),
               ),
             ],
@@ -1106,6 +1162,10 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
                                   status == 'in_transit' || 
                                   status == 'assigned';
     
+    // Check if this cargo was cancelled by the current courier
+    final bool isCancelled = delivery['is_cancelled'] == true || 
+                            status == 'cancelled';
+    
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -1146,6 +1206,40 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
               ),
             ],
           ),
+          
+          // Show cancellation warning if applicable
+          if (isCancelled && isAvailable)
+            Container(
+              width: double.infinity,
+              margin: const EdgeInsets.only(top: 8),
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFEF3F2),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: const Color(0xFFFECDCA)),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.warning_amber_rounded,
+                    color: Colors.orange[700],
+                    size: 16,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      "Trying to deliver after cancellation could cause confusion to the owner!",
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.orange[700],
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          
           const SizedBox(height: 8),
           Row(
             children: [
@@ -1225,9 +1319,9 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
                   ),
                 ),
               ),
-              if (isAvailable && !isAlreadyAccepted)
+              if (isAvailable && !isAlreadyAccepted && !isCancelled)
                 const SizedBox(width: 8),
-              if (isAvailable && !isAlreadyAccepted)
+              if (isAvailable && !isAlreadyAccepted && !isCancelled)
                 Expanded(
                   child: ElevatedButton(
                     onPressed: () => _acceptCargoDelivery(delivery),
@@ -1241,6 +1335,27 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
                     ),
                     child: const Text(
                       'Accept',
+                      style: TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                ),
+              // Show disabled accept button for cancelled tasks
+              if (isAvailable && isCancelled)
+                const SizedBox(width: 8),
+              if (isAvailable && isCancelled)
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: null, // Disabled button
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.grey[400],
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    child: const Text(
+                      'Cancelled',
                       style: TextStyle(fontWeight: FontWeight.w600),
                     ),
                   ),
@@ -1293,7 +1408,10 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
               );
               break;
             case 3:
-              // Already on Settings page
+              Navigator.pushReplacement(
+                context,
+                MaterialPageRoute(builder: (context) => const SettingsPage()),
+              );
               break;
           }
         },
@@ -1368,5 +1486,15 @@ void setupDeliveryListener(String userId, Function refreshCallback) {
       .collection('CargoDelivery')
       .where('courier_id', isEqualTo: userId)
       .snapshots()
-      .listen((_) => refreshCallback());
+      .listen((snapshot) {
+        // Check if any delivery was cancelled
+        bool hasCancellation = snapshot.docs.any((doc) {
+          final data = doc.data() as Map<String, dynamic>;
+          return data['status']?.toString().toLowerCase() == 'cancelled';
+        });
+        
+        if (hasCancellation) {
+          refreshCallback();
+        }
+      });
 }

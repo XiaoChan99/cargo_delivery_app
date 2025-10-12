@@ -30,8 +30,6 @@ class _LiveMapPageState extends State<LiveMapPage> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseAuth _auth = FirebaseAuth.instance;
   
-  LatLng _courierLocation = const LatLng(14.5995, 120.9842);
-  
   List<Map<String, dynamic>> _availableCargos = [];
   List<Map<String, dynamic>> _acceptedDeliveries = [];
   Map<String, dynamic>? _selectedCargoDetails;
@@ -43,7 +41,6 @@ class _LiveMapPageState extends State<LiveMapPage> {
   List<DeliveryRouteData> _deliveryRoutes = [];
   late StreamSubscription<QuerySnapshot>? _cargoSubscription;
   late StreamSubscription<QuerySnapshot>? _deliverySubscription;
-  late StreamSubscription<DocumentSnapshot>? _courierLocationSubscription;
 
   // Courier position along the route (1km from pickup)
   Map<String, LatLng> _courierRoutePositions = {};
@@ -172,9 +169,6 @@ class _LiveMapPageState extends State<LiveMapPage> {
         }
       }
 
-      // Update courier location
-      await _loadCourierCurrentLocation();
-
       setState(() {
         _availableCargos = availableCargos;
         _acceptedDeliveries = acceptedDeliveries;
@@ -239,7 +233,7 @@ class _LiveMapPageState extends State<LiveMapPage> {
     Future.delayed(const Duration(milliseconds: 500), () {
       try {
         // Collect all points to show
-        List<LatLng> allPoints = [_courierLocation];
+        List<LatLng> allPoints = [];
         
         // Add courier route positions
         allPoints.addAll(_courierRoutePositions.values);
@@ -302,8 +296,10 @@ class _LiveMapPageState extends State<LiveMapPage> {
         _mapController.move(center, zoom);
       } catch (e) {
         print('Error zooming to fit routes: $e');
-        // Fallback: center on courier location
-        _mapController.move(_courierLocation, 10.0);
+        // Fallback: center on first route
+        if (_deliveryRoutes.isNotEmpty) {
+          _mapController.move(_deliveryRoutes.first.origin, 10.0);
+        }
       }
     });
   }
@@ -320,29 +316,6 @@ class _LiveMapPageState extends State<LiveMapPage> {
     if (maxDiff > 0.2) return 11.0;
     if (maxDiff > 0.1) return 12.0;
     return 13.0;
-  }
-
-  Future<void> _loadCourierCurrentLocation() async {
-    try {
-      final user = _auth.currentUser;
-      if (user != null) {
-        final courierDoc = await _firestore.collection('Couriers').doc(user.uid).get();
-        if (courierDoc.exists) {
-          final data = courierDoc.data();
-          if (data?['currentLocation'] != null) {
-            final location = data!['currentLocation'] as Map<String, dynamic>;
-            setState(() {
-              _courierLocation = LatLng(
-                location['latitude']?.toDouble() ?? _courierLocation.latitude,
-                location['longitude']?.toDouble() ?? _courierLocation.longitude,
-              );
-            });
-          }
-        }
-      }
-    } catch (e) {
-      print('Error loading courier location: $e');
-    }
   }
 
   Future<LatLng> _getCoordinatesForAddress(String address) async {
@@ -424,25 +397,6 @@ class _LiveMapPageState extends State<LiveMapPage> {
           .listen((snapshot) {
         _loadAvailableAndAcceptedCargos();
       });
-
-      _courierLocationSubscription = _firestore
-          .collection('Couriers')
-          .doc(user.uid)
-          .snapshots()
-          .listen((snapshot) {
-        if (snapshot.exists) {
-          final data = snapshot.data();
-          if (data?['currentLocation'] != null) {
-            final location = data!['currentLocation'] as Map<String, dynamic>;
-            setState(() {
-              _courierLocation = LatLng(
-                location['latitude']?.toDouble() ?? _courierLocation.latitude,
-                location['longitude']?.toDouble() ?? _courierLocation.longitude,
-              );
-            });
-          }
-        }
-      });
     }
   }
 
@@ -464,7 +418,6 @@ class _LiveMapPageState extends State<LiveMapPage> {
   void dispose() {
     _cargoSubscription?.cancel();
     _deliverySubscription?.cancel();
-    _courierLocationSubscription?.cancel();
     super.dispose();
   }
 
@@ -477,16 +430,12 @@ class _LiveMapPageState extends State<LiveMapPage> {
           Stack(
             children: [
               LiveMapWidget(
-                courierLocation: _courierLocation,
                 mapController: _mapController,
                 deliveryRoutes: _deliveryRoutes,
                 availableCargos: _availableCargos,
                 acceptedDeliveries: _acceptedDeliveries,
                 courierRoutePositions: _courierRoutePositions,
                 onDestinationTap: _showCargoDetailsForMarker,
-                onCourierTap: () {
-                  // Show courier info
-                },
                 isLoadingRoutes: _isLoadingRoutes,
               ),
               
@@ -510,7 +459,9 @@ class _LiveMapPageState extends State<LiveMapPage> {
                     }),
                     const SizedBox(height: 8),
                     _buildMapControl(Icons.my_location, () {
-                      _mapController.move(_courierLocation, 12.0);
+                      if (_deliveryRoutes.isNotEmpty) {
+                        _mapController.move(_deliveryRoutes.first.origin, 12.0);
+                      }
                     }),
                   ],
                 ),
@@ -588,11 +539,6 @@ class _LiveMapPageState extends State<LiveMapPage> {
             ),
           ),
           const SizedBox(height: 8),
-          LegendItem(
-            color: const Color(0xFFF59E0B),
-            label: 'Courier Location',
-            icon: Icons.local_shipping,
-          ),
           LegendItem(
             color: const Color(0xFF10B981),
             label: 'Pickup Point',
@@ -1003,26 +949,22 @@ class DeliveryRouteData {
 }
 
 class LiveMapWidget extends StatelessWidget {
-  final LatLng courierLocation;
   final MapController? mapController;
   final List<DeliveryRouteData> deliveryRoutes;
   final List<Map<String, dynamic>> availableCargos;
   final List<Map<String, dynamic>> acceptedDeliveries;
   final Map<String, LatLng> courierRoutePositions;
   final Function(Map<String, dynamic>) onDestinationTap;
-  final VoidCallback? onCourierTap;
   final bool isLoadingRoutes;
 
   const LiveMapWidget({
     super.key,
-    required this.courierLocation,
     this.mapController,
     required this.deliveryRoutes,
     required this.availableCargos,
     required this.acceptedDeliveries,
     required this.courierRoutePositions,
     required this.onDestinationTap,
-    this.onCourierTap,
     required this.isLoadingRoutes,
   });
 
@@ -1036,6 +978,11 @@ class LiveMapWidget extends StatelessWidget {
       const Color(0xFFEF4444), // International routes
     ];
 
+    // Use first route origin as initial center, or default to Manila
+    final initialCenter = deliveryRoutes.isNotEmpty 
+        ? deliveryRoutes.first.origin 
+        : const LatLng(14.5995, 120.9842);
+
     return SizedBox(
       width: double.infinity,
       height: double.infinity,
@@ -1044,7 +991,7 @@ class LiveMapWidget extends StatelessWidget {
         child: FlutterMap(
           mapController: mapController,
           options: MapOptions(
-            initialCenter: courierLocation,
+            initialCenter: initialCenter,
             initialZoom: 5.0, // Start more zoomed out for international
             minZoom: 2.0,     // Allow global view
             maxZoom: 18.0,
@@ -1090,241 +1037,166 @@ class LiveMapWidget extends StatelessWidget {
                         strokeWidth: routeData.isInternational ? 3.0 : 4.0,
                         borderColor: Colors.white.withOpacity(0.5),
                         borderStrokeWidth: routeData.isInternational ? 1.0 : 1.0,
+                        strokeCap: StrokeCap.round,
+                        isDotted: true,
                       ),
                     ],
                   );
                 }
-              }).toList(),
+              }),
             
-            MarkerLayer(
-              markers: [
-                // Courier marker - always show at current location (NO LABEL)
-                Marker(
-                  point: courierLocation,
-                  width: 80,
-                  height: 80,
-                  child: MapMarker(
-                    label: "", // Empty label to remove "You"
-                    color: const Color(0xFFF59E0B),
-                    isCourier: true,
-                    onTap: onCourierTap,
-                  ),
-                ),
-                
-                // Courier on route markers (1km from pickup) - NO LABEL
-                ...courierRoutePositions.entries.map((entry) {
+            // Pickup markers for accepted deliveries
+            if (!isLoadingRoutes)
+              MarkerLayer(
+                markers: deliveryRoutes.map((routeData) {
+                  final isInternational = routeData.isInternational;
+                  return Marker(
+                    point: routeData.origin,
+                    width: 40,
+                    height: 40,
+                    child: GestureDetector(
+                      onTap: () => onDestinationTap(routeData.delivery),
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(20),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withOpacity(0.2),
+                              blurRadius: 8,
+                              offset: const Offset(0, 2),
+                            ),
+                          ],
+                        ),
+                        child: Icon(
+                          Icons.location_on,
+                          color: isInternational ? const Color(0xFFEF4444) : const Color(0xFF10B981),
+                          size: 24,
+                        ),
+                      ),
+                    ),
+                  );
+                }).toList(),
+              ),
+            
+            // Destination markers for accepted deliveries
+            if (!isLoadingRoutes)
+              MarkerLayer(
+                markers: deliveryRoutes.map((routeData) {
+                  final isInternational = routeData.isInternational;
+                  return Marker(
+                    point: routeData.destination,
+                    width: 40,
+                    height: 40,
+                    child: GestureDetector(
+                      onTap: () => onDestinationTap(routeData.delivery),
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(20),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withOpacity(0.2),
+                              blurRadius: 8,
+                              offset: const Offset(0, 2),
+                            ),
+                          ],
+                        ),
+                        child: Icon(
+                          Icons.flag,
+                          color: isInternational ? const Color(0xFFEF4444) : const Color(0xFF3B82F6),
+                          size: 24,
+                        ),
+                      ),
+                    ),
+                  );
+                }).toList(),
+              ),
+            
+            // Courier position markers along routes (1km from pickup)
+            if (!isLoadingRoutes)
+              MarkerLayer(
+                markers: courierRoutePositions.entries.map((entry) {
                   final cargoId = entry.key;
                   final position = entry.value;
-                  final delivery = acceptedDeliveries.firstWhere(
-                    (d) => d['cargo_id'] == cargoId,
-                    orElse: () => {},
+                  final routeData = deliveryRoutes.firstWhere(
+                    (r) => r.delivery['cargo_id'] == cargoId,
+                    orElse: () => DeliveryRouteData(
+                      origin: const LatLng(0, 0),
+                      destination: const LatLng(0, 0),
+                      delivery: {},
+                      routePoints: [],
+                      distance: '0',
+                      duration: '0',
+                      trafficStatus: 'Unknown',
+                      isInternational: false,
+                      routeFound: false,
+                    ),
                   );
                   
                   return Marker(
                     point: position,
-                    width: 80,
-                    height: 80,
-                    child: MapMarker(
-                      label: "", // Empty label
-                      color: const Color(0xFFEF4444),
-                      icon: Icons.local_shipping,
-                      onTap: () => onDestinationTap(delivery),
-                      isCourierOnRoute: true,
+                    width: 40,
+                    height: 40,
+                    child: GestureDetector(
+                      onTap: () => onDestinationTap(routeData.delivery),
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(20),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withOpacity(0.3),
+                              blurRadius: 12,
+                              offset: const Offset(0, 4),
+                            ),
+                          ],
+                        ),
+                        child: Icon(
+                          Icons.local_shipping,
+                          color: const Color(0xFFEF4444),
+                          size: 24,
+                        ),
+                      ),
                     ),
                   );
                 }).toList(),
-                
-                // Available cargo markers (not yet accepted) - show at origin
-                ...availableCargos.map((cargo) {
+              ),
+            
+            // Available cargo markers
+            if (!isLoadingRoutes)
+              MarkerLayer(
+                markers: availableCargos.map((cargo) {
                   return Marker(
-                    point: _getCoordinatesForLocation(cargo['origin']),
-                    width: 80,
-                    height: 80,
-                    child: MapMarker(
-                      label: cargo['containerNo'] ?? 'Cargo',
-                      color: const Color(0xFF8B5CF6),
-                      icon: Icons.inventory_2,
+                    point: const LatLng(14.5995, 120.9842), // Default to Manila for available cargos
+                    width: 40,
+                    height: 40,
+                    child: GestureDetector(
                       onTap: () => onDestinationTap(cargo),
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(20),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withOpacity(0.2),
+                              blurRadius: 8,
+                              offset: const Offset(0, 2),
+                            ),
+                          ],
+                        ),
+                        child: const Icon(
+                          Icons.inventory_2,
+                          color: Color(0xFF8B5CF6),
+                          size: 24,
+                        ),
+                      ),
                     ),
                   );
                 }).toList(),
-                
-                // Origin markers for accepted deliveries (pickup points)
-                ...deliveryRoutes.map((routeData) {
-                  return Marker(
-                    point: routeData.origin,
-                    width: 80,
-                    height: 80,
-                    child: MapMarker(
-                      label: "Pickup",
-                      color: const Color(0xFF10B981),
-                      icon: Icons.location_on,
-                      onTap: () => onDestinationTap(routeData.delivery),
-                      isInternational: routeData.isInternational,
-                    ),
-                  );
-                }).toList(),
-                
-                // Destination markers for accepted deliveries (delivery points)
-                ...deliveryRoutes.map((routeData) {
-                  return Marker(
-                    point: routeData.destination,
-                    width: 80,
-                    height: 80,
-                    child: MapMarker(
-                      label: "Delivery",
-                      color: routeData.isInternational ? const Color(0xFFEF4444) : const Color(0xFF3B82F6),
-                      icon: Icons.flag,
-                      onTap: () => onDestinationTap(routeData.delivery),
-                      isInternational: routeData.isInternational,
-                    ),
-                  );
-                }).toList(),
-              ],
-            ),
+              ),
           ],
         ),
-      ),
-    );
-  }
-
-  LatLng _getCoordinatesForLocation(String location) {
-    final locationMap = {
-      // Philippines
-      'Manila': const LatLng(14.5995, 120.9842),
-      'Manila City': const LatLng(14.5995, 120.9842),
-      'Cebu': const LatLng(10.3157, 123.8854),
-      'Cebu City': const LatLng(10.3157, 123.8854),
-      'Davao': const LatLng(7.1907, 125.4553),
-      'Davao City': const LatLng(7.1907, 125.4553),
-      'Batangas': const LatLng(13.7565, 121.0583),
-      'Subic': const LatLng(14.7942, 120.2799),
-      'Quezon City': const LatLng(14.6760, 121.0437),
-      'Makati': const LatLng(14.5547, 121.0244),
-      
-      // International Locations
-      'Singapore': const LatLng(1.3521, 103.8198),
-      'Hong Kong': const LatLng(22.3193, 114.1694),
-      'Tokyo': const LatLng(35.6762, 139.6503),
-      'Seoul': const LatLng(37.5665, 126.9780),
-      'Bangkok': const LatLng(13.7563, 100.5018),
-      'Kuala Lumpur': const LatLng(3.1390, 101.6869),
-      'Taipei': const LatLng(25.0330, 121.5654),
-      'Beijing': const LatLng(39.9042, 116.4074),
-      'Shanghai': const LatLng(31.2304, 121.4737),
-      'Sydney': const LatLng(-33.8688, 151.2093),
-      'Melbourne': const LatLng(-37.8136, 144.9631),
-      'Los Angeles': const LatLng(34.0522, -118.2437),
-      'New York': const LatLng(40.7128, -74.0060),
-      'London': const LatLng(51.5074, -0.1278),
-      'Paris': const LatLng(48.8566, 2.3522),
-      'Dubai': const LatLng(25.2048, 55.2708),
-      'Mumbai': const LatLng(19.0760, 72.8777),
-      'Delhi': const LatLng(28.7041, 77.1025),
-      'Jakarta': const LatLng(-6.2088, 106.8456),
-      'Ho Chi Minh City': const LatLng(10.8231, 106.6297),
-      'Hanoi': const LatLng(21.0278, 105.8342),
-      'Osaka': const LatLng(34.6937, 135.5023),
-      'Busan': const LatLng(35.1796, 129.0756),
-      'Incheon': const LatLng(37.4563, 126.7052),
-    };
-    
-    for (var key in locationMap.keys) {
-      if (location.toLowerCase().contains(key.toLowerCase())) {
-        return locationMap[key]!;
-      }
-    }
-    
-    return const LatLng(14.5995, 120.9842);
-  }
-}
-
-class MapMarker extends StatelessWidget {
-  final String label;
-  final Color color;
-  final IconData icon;
-  final bool isCourier;
-  final bool isCourierOnRoute;
-  final VoidCallback? onTap;
-  final bool isInternational;
-
-  const MapMarker({
-    super.key,
-    required this.label,
-    required this.color,
-    this.icon = Icons.location_on,
-    this.isCourier = false,
-    this.isCourierOnRoute = false,
-    this.onTap,
-    this.isInternational = false,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // Only show label if it's not empty (for courier markers)
-          if (label.isNotEmpty)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(4),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.1),
-                    blurRadius: 4,
-                    offset: const Offset(0, 1),
-                  ),
-                ],
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (isInternational)
-                    const Icon(Icons.language, size: 8, color: Color(0xFFEF4444)),
-                  if (isCourierOnRoute)
-                    const Icon(Icons.local_shipping, size: 8, color: Color(0xFFEF4444)),
-                  const SizedBox(width: 2),
-                  Text(
-                    label,
-                    style: const TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w600,
-                      color: Color(0xFF1E293B),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: color,
-              shape: BoxShape.circle,
-              border: Border.all(
-                color: Colors.white, 
-                width: (isInternational || isCourierOnRoute) ? 3 : 2,
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.3),
-                  blurRadius: 6,
-                  offset: const Offset(0, 2),
-                ),
-              ],
-            ),
-            child: Icon(
-              isCourier ? Icons.local_shipping : 
-              isCourierOnRoute ? Icons.local_shipping : icon,
-              color: Colors.white,
-              size: (isInternational || isCourierOnRoute) ? 18 : 20,
-            ),
-          ),
-        ],
       ),
     );
   }
@@ -1345,24 +1217,11 @@ class LegendItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.symmetric(vertical: 2),
       child: Row(
-        mainAxisSize: MainAxisSize.min,
         children: [
-          Container(
-            width: 16,
-            height: 16,
-            decoration: BoxDecoration(
-              color: color,
-              shape: BoxShape.circle,
-            ),
-            child: Icon(
-              icon,
-              color: Colors.white,
-              size: 10,
-            ),
-          ),
-          const SizedBox(width: 8),
+          Icon(icon, size: 14, color: color),
+          const SizedBox(width: 6),
           Text(
             label,
             style: const TextStyle(
@@ -1371,7 +1230,7 @@ class LegendItem extends StatelessWidget {
             ),
           ),
         ],
-      )
+      ),
     );
   }
 }
