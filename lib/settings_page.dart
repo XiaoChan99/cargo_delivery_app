@@ -4,9 +4,7 @@ import 'login_page.dart';
 import 'homepage.dart';
 import 'schedulepage.dart';
 import 'livemap_page.dart';
-import 'analytics_page.dart';
 import 'info_page.dart';
-import 'change_password_page.dart';
 import 'terms_privacy_page.dart';
 import 'contact_support_page.dart';
 
@@ -18,7 +16,6 @@ class SettingsPage extends StatefulWidget {
 }
 
 class _SettingsPageState extends State<SettingsPage> {
-  bool notificationsEnabled = true;
   final FirebaseAuth _auth = FirebaseAuth.instance;
   User? _currentUser;
 
@@ -35,7 +32,7 @@ class _SettingsPageState extends State<SettingsPage> {
       body: SingleChildScrollView(
         child: Column(
           children: [
-            // Settings header section
+            // Settings header section - unchanged
             Container(
               width: double.infinity,
               padding: const EdgeInsets.fromLTRB(12, 20, 12, 20),
@@ -77,94 +74,48 @@ class _SettingsPageState extends State<SettingsPage> {
             
             const SizedBox(height: 24),
             
-            Container(
-              margin: const EdgeInsets.symmetric(horizontal: 16),
-              decoration: BoxDecoration(
-                gradient: const LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [Colors.white, Color(0xFFFAFBFF)],
-                ),
-                borderRadius: BorderRadius.circular(16),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.08),
-                    blurRadius: 20,
-                    offset: const Offset(0, 4),
-                  ),
-                ],
-              ),
-              child: Column(
-                children: [
-                  _buildMenuItem(
-                    icon: Icons.info_outline,
-                    title: "Info",
-                    onTap: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(builder: (context) => const InfoPage()),
-                      );
-                    },
-                  ),
-                  _buildDivider(),
-                  _buildMenuItem(
-                    icon: Icons.analytics_outlined,
-                    title: "Analytics",
-                    onTap: () {
-                      if (_currentUser != null) {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (context) => AnalyticsPage(userId: _currentUser!.uid),
-                          ),
-                        );
-                      } else {
-                        _showErrorDialog('Please login to view analytics');
-                      }
-                    },
-                  ),
-                  _buildDivider(),
-                  _buildNotificationMenuItem(),
-                  _buildDivider(),
-                  _buildMenuItem(
-                    icon: Icons.lock_outline,
-                    title: "Change Password",
-                    onTap: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(builder: (context) => const ChangePasswordPage()),
-                      );
-                    },
-                  ),
-                  _buildDivider(),
-                  _buildMenuItem(
-                    icon: Icons.description_outlined,
-                    title: "Terms & Privacy",
-                    onTap: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(builder: (context) => const TermsPrivacyPage()),
-                      );
-                    },
-                  ),
-                  _buildDivider(),
-                  _buildMenuItem(
-                    icon: Icons.email_outlined,
-                    title: "Contact Support",
-                    onTap: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(builder: (context) => const ContactSupportPage()),
-                      );
-                    },
-                    showArrow: true,
-                  ),
-                ],
-              ),
+            // Account Section - Removed container and header
+            _buildMenuItem(
+              icon: Icons.person_outline,
+              title: "Profile",
+              subtitle: "Manage your profile information",
+              onTap: () {
+               Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => const InfoPage()),
+                );
+              },
+            ),
+            _buildDivider(),
+            _buildMenuItem(
+              icon: Icons.email_outlined,
+              title: "Contact Support",
+              subtitle: "Get help and support",
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => const ContactSupportPage()),
+                );
+              },
+            ),
+            
+            const SizedBox(height: 24),
+            _buildDivider(),
+            _buildMenuItem(
+              icon: Icons.description_outlined,
+              title: "Terms & Privacy",
+              subtitle: "Read our policies",
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => const TermsPrivacyPage()),
+                );
+              },
             ),
             
             const SizedBox(height: 32),
             
+            // Logout Button
             Container(
               margin: const EdgeInsets.symmetric(horizontal: 16),
               width: double.infinity,
@@ -191,7 +142,7 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
             ),
             
-            const SizedBox(height: 100), // Space for bottom navigation
+            const SizedBox(height: 100),
           ],
         ),
       ),
@@ -202,8 +153,8 @@ class _SettingsPageState extends State<SettingsPage> {
   Widget _buildMenuItem({
     required IconData icon,
     required String title,
+    required String subtitle,
     required VoidCallback onTap,
-    bool showArrow = false,
   }) {
     return InkWell(
       onTap: onTap,
@@ -212,65 +163,50 @@ class _SettingsPageState extends State<SettingsPage> {
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
         child: Row(
           children: [
-            Icon(
-              icon,
-              color: const Color(0xFF3B82F6),
-              size: 24,
+            Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                color: const Color(0xFF3B82F6).withOpacity(0.1),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Icon(
+                icon,
+                color: const Color(0xFF3B82F6),
+                size: 22,
+              ),
             ),
             const SizedBox(width: 16),
             Expanded(
-              child: Text(
-                title,
-                style: const TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w500,
-                  color: Color(0xFF1E293B),
-                ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w500,
+                      color: Color(0xFF1E293B),
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    subtitle,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      color: Color(0xFF64748B),
+                    ),
+                  ),
+                ],
               ),
             ),
-            if (showArrow)
-              const Icon(
-                Icons.arrow_forward_ios,
-                color: Color(0xFF64748B),
-                size: 16,
-              ),
+            const Icon(
+              Icons.arrow_forward_ios,
+              color: Color(0xFF64748B),
+              size: 16,
+            ),
           ],
         ),
-      ),
-    );
-  }
-
-  Widget _buildNotificationMenuItem() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-      child: Row(
-        children: [
-          const Icon(
-            Icons.notifications_outlined,
-            color: Color(0xFF3B82F6),
-            size: 24,
-          ),
-          const SizedBox(width: 16),
-          const Expanded(
-            child: Text(
-              "Notification",
-              style: TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w500,
-                color: Color(0xFF1E293B),
-              ),
-            ),
-          ),
-          Switch(
-            value: notificationsEnabled,
-            onChanged: (value) {
-              setState(() {
-                notificationsEnabled = value;
-              });
-            },
-            activeThumbColor: const Color(0xFF3B82F6),
-          ),
-        ],
       ),
     );
   }
@@ -288,6 +224,9 @@ class _SettingsPageState extends State<SettingsPage> {
       context: context,
       builder: (BuildContext context) {
         return AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
           title: const Text("Logout"),
           content: const Text("Are you sure you want to logout?"),
           actions: [
@@ -311,30 +250,6 @@ class _SettingsPageState extends State<SettingsPage> {
                 foregroundColor: Colors.white,
               ),
               child: const Text("Logout"),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  void _showErrorDialog(String message) {
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: const Text("Error"),
-          content: Text(message),
-          actions: [
-            ElevatedButton(
-              onPressed: () {
-                Navigator.of(context).pop();
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF3B82F6),
-                foregroundColor: Colors.white,
-              ),
-              child: const Text("OK"),
             ),
           ],
         );

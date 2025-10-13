@@ -75,64 +75,128 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
   }
 
   Future<void> _loadAvailableCargos() async {
-    try {
-      QuerySnapshot cargoSnapshot = await _firestore
-          .collection('Cargo')
-          .orderBy('created_at', descending: true)
-          .get();
+  try {
+    QuerySnapshot cargoSnapshot = await _firestore
+        .collection('Cargo')
+        .orderBy('created_at', descending: true)
+        .get();
 
-      QuerySnapshot deliverySnapshot = await _firestore
-          .collection('CargoDelivery')
-          .get();
+    QuerySnapshot deliverySnapshot = await _firestore
+        .collection('CargoDelivery')
+        .get();
 
-      Set<String> assignedCargoIds = {};
-      for (var doc in deliverySnapshot.docs) {
-        var deliveryData = doc.data() as Map<String, dynamic>;
-        if (deliveryData['cargo_id'] != null) {
-          assignedCargoIds.add(deliveryData['cargo_id'].toString());
-        }
+    Set<String> assignedCargoIds = {};
+    Map<String, String> cargoDeliveryStatus = {};
+    
+    for (var doc in deliverySnapshot.docs) {
+      var deliveryData = doc.data() as Map<String, dynamic>;
+      if (deliveryData['cargo_id'] != null) {
+        String cargoId = deliveryData['cargo_id'].toString();
+        assignedCargoIds.add(cargoId);
+        cargoDeliveryStatus[cargoId] = deliveryData['status']?.toString().toLowerCase() ?? '';
       }
-
-      List<Map<String, dynamic>> availableCargos = [];
-      for (var doc in cargoSnapshot.docs) {
-        var cargoData = doc.data() as Map<String, dynamic>;
-        final status = cargoData['status']?.toString().toLowerCase() ?? 'pending';
-
-        // Only include cargos that are not assigned to any delivery and not delayed
-        if (!assignedCargoIds.contains(doc.id) && status != 'delayed') {
-          Map<String, dynamic> combinedData = {
-            'cargo_id': doc.id,
-            'containerNo': 'CONT-${cargoData['item_number']?.toString() ?? 'N/A'}',
-            'status': cargoData['status']?.toString() ?? 'pending',
-            'pickupLocation': cargoData['origin']?.toString() ?? 'Port Terminal',
-            'destination': cargoData['destination']?.toString() ?? 'Delivery Point',
-            'created_at': cargoData['created_at'],
-            'description': cargoData['description']?.toString() ?? 'N/A',
-            'weight': cargoData['weight'] ?? 0.0,
-            'value': cargoData['value'] ?? 0.0,
-            'hs_code': cargoData['hs_code']?.toString() ?? 'N/A',
-            'quantity': cargoData['quantity'] ?? 0,
-            'item_number': cargoData['item_number'] ?? 0,
-            'additional_info': cargoData['additional_info']?.toString() ?? '',
-            'submanifest_id': cargoData['submanifest_id']?.toString() ?? '',
-          };
-          availableCargos.add(combinedData);
-        }
-      }
-
-      setState(() {
-        _availableCargos = availableCargos;
-      });
-    } catch (e) {
-      print('Error loading available cargos: $e');
     }
+
+    List<Map<String, dynamic>> availableCargos = [];
+    for (var doc in cargoSnapshot.docs) {
+      var cargoData = doc.data() as Map<String, dynamic>;
+      String cargoId = doc.id;
+      String deliveryStatus = cargoDeliveryStatus[cargoId] ?? '';
+
+      // Only include cargos that are not assigned OR have cancelled status
+      if (!assignedCargoIds.contains(cargoId) || deliveryStatus == 'cancelled') {
+        Map<String, dynamic> combinedData = {
+          'cargo_id': cargoId,
+          'containerNo': 'CONT-${cargoData['item_number']?.toString() ?? 'N/A'}',
+          'status': deliveryStatus.isNotEmpty ? deliveryStatus : 'pending', // Use delivery status
+          'pickupLocation': cargoData['origin']?.toString() ?? 'Port Terminal',
+          'destination': cargoData['destination']?.toString() ?? 'Delivery Point',
+          'created_at': cargoData['created_at'],
+          'description': cargoData['description']?.toString() ?? 'N/A',
+          'weight': cargoData['weight'] ?? 0.0,
+          'value': cargoData['value'] ?? 0.0,
+          'hs_code': cargoData['hs_code']?.toString() ?? 'N/A',
+          'quantity': cargoData['quantity'] ?? 0,
+          'item_number': cargoData['item_number'] ?? 0,
+          'additional_info': cargoData['additional_info']?.toString() ?? '',
+          'submanifest_id': cargoData['submanifest_id']?.toString() ?? '',
+        };
+        availableCargos.add(combinedData);
+      }
+    }
+
+    setState(() {
+      _availableCargos = availableCargos;
+    });
+  } catch (e) {
+    print('Error loading available cargos: $e');
   }
+}
 
   Future<void> _loadInProgressDeliveries() async {
     try {
       final user = _auth.currentUser;
-      if (user == null) return;
+      if (user == null) return;Future<void> _loadInProgressDeliveries() async {
+  try {
+    final user = _auth.currentUser;
+    if (user == null) return;
 
+    QuerySnapshot deliverySnapshot = await _firestore
+        .collection('CargoDelivery')
+        .where('courier_id', isEqualTo: user.uid)
+        .get();
+
+    List<Map<String, dynamic>> inProgressDeliveries = [];
+    
+    for (var doc in deliverySnapshot.docs) {
+      var deliveryData = doc.data() as Map<String, dynamic>;
+      String status = deliveryData['status']?.toString().toLowerCase() ?? '';
+      
+      // Only include in-progress, in_transit, assigned, or delayed statuses
+      if (status == 'in-progress' || status == 'in_transit' || status == 'assigned' || status == 'delayed') {
+        try {
+          DocumentSnapshot cargoDoc = await _firestore
+              .collection('Cargo')
+              .doc(deliveryData['cargo_id'].toString())
+              .get();
+
+          if (cargoDoc.exists) {
+            var cargoData = cargoDoc.data() as Map<String, dynamic>;
+            
+            Map<String, dynamic> combinedData = {
+              'delivery_id': doc.id,
+              'cargo_id': deliveryData['cargo_id'],
+              'containerNo': 'CONT-${cargoData['item_number'] ?? 'N/A'}',
+              'status': deliveryData['status'] ?? 'in-progress', // Status from CargoDelivery
+              'pickupLocation': cargoData['origin'] ?? 'Port Terminal',
+              'destination': cargoData['destination'] ?? 'Delivery Point',
+              'confirmed_at': deliveryData['confirmed_at'],
+              'courier_id': deliveryData['courier_id'],
+              'description': cargoData['description'] ?? 'N/A',
+              'weight': cargoData['weight'] ?? 0.0,
+              'value': cargoData['value'] ?? 0.0,
+              'hs_code': cargoData['hs_code'] ?? 'N/A',
+              'quantity': cargoData['quantity'] ?? 0,
+              'item_number': cargoData['item_number'] ?? 0,
+              'proof_image': deliveryData['proof_image'],
+              'confirmed_by': deliveryData['confirmed_by'],
+              'remarks': deliveryData['remarks'],
+            };
+            inProgressDeliveries.add(combinedData);
+          }
+        } catch (e) {
+          print('Error loading cargo details for delivery: $e');
+        }
+      }
+    }
+
+    setState(() {
+      _inProgressDeliveries = inProgressDeliveries;
+    });
+  } catch (e) {
+    print('Error loading in-progress deliveries: $e');
+  }
+}
       QuerySnapshot deliverySnapshot = await _firestore
           .collection('CargoDelivery')
           .where('courier_id', isEqualTo: user.uid)

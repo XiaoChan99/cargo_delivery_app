@@ -58,18 +58,18 @@ class OSMService {
     }
   }
 
-  // Routing - Get real-time route info with geometry (international support)
+  // Enhanced Routing - Get more accurate route with better waypoint handling
   static Future<Map<String, dynamic>> getRouteWithGeometry(
     LatLng start,
     LatLng end, {
     String profile = 'driving', // driving, walking, cycling
   }) async {
     try {
-      // Get route from OSRM with full geometry
+      // Use OSRM with more precise parameters
       final response = await http.get(
         Uri.parse('https://router.project-osrm.org/route/v1/$profile/'
           '${start.longitude},${start.latitude};'
-          '${end.longitude},${end.latitude}?overview=full&geometries=geojson&steps=true')
+          '${end.longitude},${end.latitude}?overview=full&geometries=geojson&steps=true&annotations=true')
       );
       
       if (response.statusCode == 200) {
@@ -79,7 +79,7 @@ class OSMService {
           final distanceKm = (route['distance'] / 1000); // meters to km
           final durationMinutes = (route['duration'] / 60); // seconds to minutes
           
-          // Extract geometry coordinates
+          // Extract geometry coordinates with endpoint correction
           List<LatLng> routePoints = [];
           if (route['geometry'] != null && route['geometry']['coordinates'] != null) {
             final coordinates = route['geometry']['coordinates'] as List;
@@ -88,6 +88,26 @@ class OSMService {
                 routePoints.add(LatLng(coord[1].toDouble(), coord[0].toDouble()));
               }
             }
+            
+            // Ensure the route ends exactly at the destination
+            if (routePoints.isNotEmpty) {
+              final lastPoint = routePoints.last;
+              final distanceToEnd = _distanceCalculator(lastPoint, end);
+              
+              // If the route doesn't end close enough to the destination, add the destination point
+              if (distanceToEnd > 100) { // More than 100 meters away
+                routePoints.add(end);
+              } else {
+                // Replace the last point with the exact destination for precision
+                routePoints[routePoints.length - 1] = end;
+              }
+            } else {
+              // Fallback: create straight line if no route points
+              routePoints = [start, end];
+            }
+          } else {
+            // Fallback: create straight line if no geometry
+            routePoints = [start, end];
           }
           
           // Determine if it's an international route
@@ -107,6 +127,7 @@ class OSMService {
             'geometry': route['geometry'],
             'isInternational': isInternational,
             'routeFound': true,
+            'routeAccuracy': 'high',
           };
         }
       }
@@ -115,6 +136,66 @@ class OSMService {
       print('Routing error: $e');
       return _getFallbackRouteInfo(start, end);
     }
+  }
+
+  // Alternative routing service for better accuracy in some regions
+  static Future<Map<String, dynamic>> getAlternativeRoute(
+    LatLng start,
+    LatLng end, {
+    String profile = 'driving',
+  }) async {
+    try {
+      // Try GraphHopper as alternative routing service
+      final response = await http.get(
+        Uri.parse('https://graphhopper.com/api/1/route?'
+          'point=${start.latitude},${start.longitude}'
+          '&point=${end.latitude},${end.longitude}'
+          '&vehicle=$profile'
+          '&key=[2f91b148-9935-442e-be56-f02014d082ae]' // You can get a free key from GraphHopper
+          '&type=json&instructions=true&points_encoded=false')
+      );
+      
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        if (data['paths'] != null && data['paths'].isNotEmpty) {
+          final path = data['paths'][0];
+          final distanceKm = (path['distance'] / 1000);
+          final durationMinutes = (path['time'] / 60000); // ms to minutes
+          
+          List<LatLng> routePoints = [];
+          if (path['points'] != null && path['points']['coordinates'] != null) {
+            final coordinates = path['points']['coordinates'] as List;
+            for (var coord in coordinates) {
+              if (coord is List && coord.length >= 2) {
+                routePoints.add(LatLng(coord[1].toDouble(), coord[0].toDouble()));
+              }
+            }
+            
+            // Ensure route ends at exact destination
+            if (routePoints.isNotEmpty) {
+              routePoints[routePoints.length - 1] = end;
+            }
+          }
+          
+          return {
+            'distance': distanceKm.toStringAsFixed(1),
+            'distanceValue': distanceKm,
+            'duration': durationMinutes.toStringAsFixed(0),
+            'durationValue': durationMinutes,
+            'trafficStatus': _getTrafficStatus(durationMinutes, distanceKm),
+            'routePoints': routePoints.isNotEmpty ? routePoints : [start, end],
+            'isInternational': distanceKm > 500.0,
+            'routeFound': true,
+            'routeAccuracy': 'high',
+          };
+        }
+      }
+    } catch (e) {
+      print('Alternative routing error: $e');
+    }
+    
+    // Fallback to OSRM if GraphHopper fails
+    return getRouteWithGeometry(start, end, profile: profile);
   }
 
   // Check if two points are in different countries (simplified)
@@ -145,7 +226,7 @@ class OSMService {
   }
   
   static Map<String, dynamic> _getFallbackRouteInfo(LatLng start, LatLng end) {
-    // Generate a straight line as fallback
+    // Generate a straight line as fallback but ensure it goes to exact destination
     List<LatLng> fallbackPoints = [start, end];
     final double distance = _calculateDistance(start, end);
     final bool isInternational = distance > 500.0;
@@ -162,6 +243,21 @@ class OSMService {
       'routePoints': fallbackPoints,
       'isInternational': isInternational,
       'routeFound': false,
+      'routeAccuracy': 'low',
     };
+  }
+
+  // Enhanced coordinate validation and correction
+  static LatLng validateAndCorrectCoordinates(LatLng point, LatLng reference) {
+    // Ensure coordinates are within valid ranges
+    double lat = point.latitude.clamp(-90.0, 90.0);
+    double lng = point.longitude.clamp(-180.0, 180.0);
+    
+    // If coordinates are invalid, use reference point
+    if (lat == 0.0 && lng == 0.0) {
+      return reference;
+    }
+    
+    return LatLng(lat, lng);
   }
 }

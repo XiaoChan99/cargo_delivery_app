@@ -35,10 +35,6 @@ class StatusUpdatePage extends StatefulWidget {
     return cargoData?['destination'] ?? 'Delivery Point';
   }
 
-  String get status {
-    return cargoData?['status'] ?? 'pending';
-  }
-
   String _formatTime(Timestamp timestamp) {
     final date = timestamp.toDate();
     final hour = date.hour % 12;
@@ -57,6 +53,10 @@ class _StatusUpdatePageState extends State<StatusUpdatePage> {
   final ImagePicker _imagePicker = ImagePicker();
   bool _isSubmitting = false;
   DateTime? _selectedDateTime;
+  
+  // New variables for CargoDelivery data
+  Map<String, dynamic>? _deliveryData;
+  bool _isLoading = true;
 
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseAuth _auth = FirebaseAuth.instance;
@@ -71,7 +71,44 @@ class _StatusUpdatePageState extends State<StatusUpdatePage> {
   @override
   void initState() {
     super.initState();
-    selectedStatus = _getStatusText(widget.status);
+    _loadDeliveryData();
+  }
+
+  // Load delivery data from CargoDelivery collection
+  Future<void> _loadDeliveryData() async {
+    try {
+      final cargoId = widget.cargoId;
+      if (cargoId.isNotEmpty) {
+        QuerySnapshot deliveryQuery = await _firestore
+            .collection('CargoDelivery')
+            .where('cargo_id', isEqualTo: cargoId)
+            .limit(1)
+            .get();
+        
+        if (deliveryQuery.docs.isNotEmpty) {
+          _deliveryData = deliveryQuery.docs.first.data() as Map<String, dynamic>;
+          // Update selectedStatus based on delivery data
+          final deliveryStatus = _deliveryData?['status'] ?? 'pending';
+          setState(() {
+            selectedStatus = _getStatusText(deliveryStatus);
+          });
+        } else {
+          // No delivery record exists yet
+          setState(() {
+            selectedStatus = _getStatusText('pending');
+          });
+        }
+      }
+      setState(() {
+        _isLoading = false;
+      });
+    } catch (e) {
+      print('Error loading delivery data: $e');
+      setState(() {
+        _isLoading = false;
+        selectedStatus = _getStatusText('pending');
+      });
+    }
   }
 
   String get _cargoId {
@@ -82,8 +119,9 @@ class _StatusUpdatePageState extends State<StatusUpdatePage> {
     return widget.containerNo;
   }
 
+  // Get status only from CargoDelivery
   String get _status {
-    return widget.status;
+    return _deliveryData?['status'] ?? 'pending';
   }
 
   String get _pickup {
@@ -227,45 +265,32 @@ class _StatusUpdatePageState extends State<StatusUpdatePage> {
         return;
       }
 
-      // Update Cargo status
-      if (_cargoId.isNotEmpty) {
-        await _firestore
-            .collection('Cargo')
-            .doc(_cargoId)
-            .update({
-              'status': selectedStatus.toLowerCase().replaceAll(' ', '-'),
-              'updated_at': Timestamp.now(),
-              if (_selectedDateTime != null && selectedStatus == 'Delayed')
-                'estimated_arrival': Timestamp.fromDate(_selectedDateTime!),
-            });
-      }
-
-      // Update or create delivery record
+      // Only update CargoDelivery, not Cargo
       final deliveryQuery = await _firestore
           .collection('CargoDelivery')
           .where('cargo_id', isEqualTo: _cargoId)
           .limit(1)
           .get();
 
+      final updateData = {
+        'status': selectedStatus.toLowerCase().replaceAll(' ', '-'),
+        'remarks': notesController.text.isNotEmpty ? notesController.text : 'Status updated to $selectedStatus',
+        'confirmed_at': Timestamp.now(),
+        'updated_at': Timestamp.now(),
+        if (_selectedDateTime != null && selectedStatus == 'Delayed')
+          'estimated_arrival': Timestamp.fromDate(_selectedDateTime!),
+      };
+
       if (deliveryQuery.docs.isNotEmpty) {
-        await deliveryQuery.docs.first.reference.update({
-          'status': selectedStatus.toLowerCase().replaceAll(' ', '-'),
-          'remarks': notesController.text.isNotEmpty ? notesController.text : 'Status updated to $selectedStatus',
-          'confirmed_at': Timestamp.now(),
-          if (_selectedDateTime != null && selectedStatus == 'Delayed')
-            'estimated_arrival': Timestamp.fromDate(_selectedDateTime!),
-        });
+        // Update existing delivery record
+        await deliveryQuery.docs.first.reference.update(updateData);
       } else {
+        // Create new delivery record if it doesn't exist
         await _firestore.collection('CargoDelivery').add({
           'cargo_id': _cargoId,
           'courier_id': user.uid,
-          'status': selectedStatus.toLowerCase().replaceAll(' ', '-'),
-          'confirmed_at': Timestamp.now(),
-          'confirmed_by': 'courier',
-          'proof_image': '',
-          'remarks': notesController.text.isNotEmpty ? notesController.text : 'Status updated to $selectedStatus',
-          if (_selectedDateTime != null && selectedStatus == 'Delayed')
-            'estimated_arrival': Timestamp.fromDate(_selectedDateTime!),
+          ...updateData,
+          'created_at': Timestamp.now(),
         });
       }
 
@@ -777,30 +802,99 @@ class _StatusUpdatePageState extends State<StatusUpdatePage> {
   }
 
   void _reportDelay(String reason, DateTime estimatedArrival) {
-    // Implement the delay reporting logic here
-    // This function would typically update Firestore with the delay information
-    print('Delay reported for $_containerNo: $reason, Estimated arrival: $estimatedArrival');
-    
-    // You can add Firestore update logic similar to _updateStatusInFirestore
-    // For example:
-    // _firestore.collection('Cargo').doc(_cargoId).update({
-    //   'status': 'delayed',
-    //   'delay_reason': reason,
-    //   'estimated_arrival': Timestamp.fromDate(estimatedArrival),
-    //   'updated_at': Timestamp.now(),
-    // });
-    
-    // Show success message
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Delay reported successfully'),
-        backgroundColor: Color(0xFF10B981),
-      ),
-    );
+    setState(() {
+      _isSubmitting = true;
+    });
+
+    _updateDelayInFirestore(reason, estimatedArrival);
+  }
+
+  Future<void> _updateDelayInFirestore(String reason, DateTime estimatedArrival) async {
+    try {
+      final user = _auth.currentUser;
+      if (user == null) {
+        _showErrorModal('User not logged in');
+        return;
+      }
+
+      // Only update CargoDelivery for delay reporting
+      final deliveryQuery = await _firestore
+          .collection('CargoDelivery')
+          .where('cargo_id', isEqualTo: _cargoId)
+          .limit(1)
+          .get();
+
+      final delayData = {
+        'status': 'delayed',
+        'delay_reason': reason,
+        'estimated_arrival': Timestamp.fromDate(estimatedArrival),
+        'updated_at': Timestamp.now(),
+        'remarks': 'Delay reported: $reason',
+      };
+
+      if (deliveryQuery.docs.isNotEmpty) {
+        await deliveryQuery.docs.first.reference.update(delayData);
+      } else {
+        await _firestore.collection('CargoDelivery').add({
+          'cargo_id': _cargoId,
+          'courier_id': user.uid,
+          ...delayData,
+          'created_at': Timestamp.now(),
+        });
+      }
+
+      // Create delay notification
+      await _firestore.collection('Notifications').add({
+        'userId': user.uid,
+        'type': 'delivery_delayed',
+        'message': 'Delivery delayed for Container $_containerNo: $reason',
+        'timestamp': Timestamp.now(),
+        'read': false,
+        'cargoId': _cargoId,
+        'containerNo': _containerNo,
+      });
+
+      setState(() {
+        _isSubmitting = false;
+        selectedStatus = 'Delayed';
+        _selectedDateTime = estimatedArrival;
+      });
+
+      _showSuccessModal();
+      
+    } catch (e) {
+      setState(() {
+        _isSubmitting = false;
+      });
+      _showErrorModal('Failed to report delay: $e');
+    }
   }
 
   @override
   Widget build(BuildContext context) {
+    if (_isLoading) {
+      return Scaffold(
+        backgroundColor: const Color(0xFFF8FAFC),
+        body: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const CircularProgressIndicator(
+                valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF3B82F6)),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'Loading delivery data...',
+                style: TextStyle(
+                  color: Color(0xFF64748B),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     final screenWidth = MediaQuery.of(context).size.width;
     final isSmallScreen = screenWidth < 375;
 

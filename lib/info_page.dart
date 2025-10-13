@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-
+import 'package:image_picker/image_picker.dart';
+import 'dart:io';
+import 'dart:convert';
 class InfoPage extends StatefulWidget {
   const InfoPage({super.key});
 
@@ -12,9 +14,14 @@ class InfoPage extends StatefulWidget {
 class _InfoPageState extends State<InfoPage> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseAuth _auth = FirebaseAuth.instance;
+  final ImagePicker _imagePicker = ImagePicker();
+  
   Map<String, dynamic>? userData;
   bool isLoading = true;
   String? profileImageUrl;
+  bool isUploadingImage = false;
+  String deliveryStatus = 'Available'; // Default status
+  int activeDeliveries = 0;
 
   // Controllers for text fields
   final TextEditingController _firstNameController = TextEditingController();
@@ -44,6 +51,140 @@ class _InfoPageState extends State<InfoPage> {
   String _formatDateToString(DateTime? date) {
     if (date == null) return '';
     return "${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}";
+  }
+
+  // Enhanced method to fetch profile image with priority order
+  String? _getProfileImageUrl(Map<String, dynamic>? data) {
+    if (data == null) return null;
+    
+    // Priority order for profile image fields
+    final List<String> imageFieldPriority = [
+      'profileImageUrl',
+      'photoURL',
+      'profile_image',
+      'imageUrl',
+      'avatar',
+      'profilePicture',
+      'picture',
+      'profile_image_base64', // Added for your database
+    ];
+    
+    for (String field in imageFieldPriority) {
+      final imageUrl = data[field]?.toString();
+      if (imageUrl != null && imageUrl.isNotEmpty && imageUrl != 'null') {
+        // Handle base64 images
+        if (field == 'profile_image_base64' && imageUrl.startsWith('/9j/')) {
+          return 'data:image/jpeg;base64,$imageUrl';
+        }
+        return imageUrl;
+      }
+    }
+    
+    // Fallback: Check if user has a photo URL in Firebase Auth
+    final user = _auth.currentUser;
+    if (user?.photoURL != null && user!.photoURL!.isNotEmpty) {
+      return user.photoURL;
+    }
+    
+    return null;
+  }
+
+  // Method to check delivery status from CargoDelivery collection
+  Future<void> _checkDeliveryStatus() async {
+    try {
+      final user = _auth.currentUser;
+      if (user != null) {
+        // Query CargoDelivery for active deliveries for this courier
+        final querySnapshot = await _firestore
+            .collection('CargoDelivery')
+            .where('courier_id', isEqualTo: user.uid)
+            .where('status', whereIn: ['in-progress', 'accepted', 'picked-up', 'on-the-way'])
+            .get();
+
+        setState(() {
+          activeDeliveries = querySnapshot.docs.length;
+          deliveryStatus = activeDeliveries > 0 ? 'On Delivery' : 'Available';
+        });
+
+        // Update courier status in Firestore
+        await _updateCourierStatus();
+      }
+    } catch (e) {
+      print("Error checking delivery status: $e");
+      setState(() {
+        deliveryStatus = 'Available';
+        activeDeliveries = 0;
+      });
+    }
+  }
+
+  // Update courier status in Firestore
+  Future<void> _updateCourierStatus() async {
+    try {
+      final user = _auth.currentUser;
+      if (user != null) {
+        await _firestore.collection('Couriers').doc(user.uid).update({
+          'status': deliveryStatus.toLowerCase(),
+          'availability': deliveryStatus == 'On Delivery' ? 'busy' : 'available',
+          'updated_at': FieldValue.serverTimestamp(),
+        });
+      }
+    } catch (e) {
+      print("Error updating courier status: $e");
+    }
+  }
+
+  // Method to get status color
+  Color _getStatusColor(String status) {
+    switch (status.toLowerCase()) {
+      case 'available':
+        return Colors.green;
+      case 'on delivery':
+        return Colors.orange;
+      case 'offline':
+        return Colors.grey;
+      case 'pending approval':
+        return Colors.amber;
+      default:
+        return Colors.blue;
+    }
+  }
+
+  // Method to get status icon
+  IconData _getStatusIcon(String status) {
+    switch (status.toLowerCase()) {
+      case 'available':
+        return Icons.check_circle;
+      case 'on delivery':
+        return Icons.local_shipping;
+      case 'offline':
+        return Icons.offline_bolt;
+      case 'pending approval':
+        return Icons.pending;
+      default:
+        return Icons.info;
+    }
+  }
+
+  // Method to get delivery count badge
+  Widget _getDeliveryBadge() {
+    if (activeDeliveries == 0) return const SizedBox.shrink();
+    
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: Colors.red,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Text(
+        activeDeliveries.toString(),
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 12,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
+    );
   }
 
   @override
@@ -76,11 +217,8 @@ class _InfoPageState extends State<InfoPage> {
           setState(() {
             userData = doc.data()!;
             
-            // Get profile image URL from Firestore document
-            profileImageUrl = userData?['profileImageUrl']?.toString() ?? 
-                            userData?['photoURL']?.toString() ?? 
-                            userData?['profile_image']?.toString() ?? 
-                            userData?['imageUrl']?.toString();
+            // Enhanced profile image fetching
+            profileImageUrl = _getProfileImageUrl(userData);
           });
           
           // Pre-fill the text controllers with existing data
@@ -101,6 +239,9 @@ class _InfoPageState extends State<InfoPage> {
             final expiryDate = DateTime(createdAt.year + 2, createdAt.month, createdAt.day);
             _licenseExpiryController.text = _formatDateToString(expiryDate);
           }
+
+          // Check delivery status
+          await _checkDeliveryStatus();
 
           if (!mounted) return;
           setState(() {
@@ -186,6 +327,143 @@ class _InfoPageState extends State<InfoPage> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text("Failed to update information: $e"),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _uploadProfileImage(File imageFile) async {
+    try {
+      setState(() {
+        isUploadingImage = true;
+      });
+
+      final user = _auth.currentUser;
+      if (user != null) {
+        // Convert image to base64
+        final bytes = await imageFile.readAsBytes();
+        final base64Image = base64Encode(bytes);
+
+        // Update Firestore with base64 image
+        await _firestore.collection('Couriers').doc(user.uid).update({
+          'profile_image_base64': base64Image,
+          'updated_at': FieldValue.serverTimestamp(),
+        });
+
+        // Refresh data
+        await _fetchUserData();
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text("Profile image updated successfully"),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      print("Error uploading profile image: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("Failed to upload profile image: $e"),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          isUploadingImage = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _pickImage() async {
+    try {
+      final XFile? pickedFile = await _imagePicker.pickImage(
+        source: ImageSource.gallery,
+        maxWidth: 512,
+        maxHeight: 512,
+        imageQuality: 80,
+      );
+
+      if (pickedFile != null) {
+        await _uploadProfileImage(File(pickedFile.path));
+      }
+    } catch (e) {
+      print("Error picking image: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("Failed to pick image: $e"),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  void _showImageOptions() {
+    showModalBottomSheet(
+      context: context,
+      builder: (BuildContext context) {
+        return SafeArea(
+          child: Wrap(
+            children: [
+              ListTile(
+                leading: const Icon(Icons.photo_library),
+                title: const Text('Choose from Gallery'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _pickImage();
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.delete),
+                title: const Text('Remove Profile Picture'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _removeProfileImage();
+                },
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _removeProfileImage() async {
+    try {
+      final user = _auth.currentUser;
+      if (user != null) {
+        await _firestore.collection('Couriers').doc(user.uid).update({
+          'profile_image_base64': FieldValue.delete(),
+          'updated_at': FieldValue.serverTimestamp(),
+        });
+
+        await _fetchUserData();
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text("Profile image removed"),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      print("Error removing profile image: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("Failed to remove profile image: $e"),
             backgroundColor: Colors.red,
           ),
         );
@@ -350,7 +628,7 @@ class _InfoPageState extends State<InfoPage> {
     );
   }
 
-  Widget _buildInfoItem(String label, String value) {
+  Widget _buildInfoItem(String label, String value, {Color? valueColor, IconData? icon}) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 16),
       child: Row(
@@ -367,13 +645,29 @@ class _InfoPageState extends State<InfoPage> {
               ),
             ),
           ),
+          if (icon != null) ...[
+            Icon(
+              icon,
+              size: 18,
+              color: valueColor ?? const Color(0xFF1E293B),
+            ),
+            const SizedBox(width: 8),
+          ],
           Expanded(
-            child: Text(
-              value.isEmpty ? "Not provided" : value,
-              style: const TextStyle(
-                fontSize: 14,
-                color: Color(0xFF1E293B),
-              ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    value.isEmpty ? "Not provided" : value,
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: valueColor ?? const Color(0xFF1E293B),
+                      fontWeight: label == "Status" ? FontWeight.w600 : FontWeight.normal,
+                    ),
+                  ),
+                ),
+                if (label == "Status" && activeDeliveries > 0) _getDeliveryBadge(),
+              ],
             ),
           ),
         ],
@@ -404,6 +698,9 @@ class _InfoPageState extends State<InfoPage> {
 
   @override
   Widget build(BuildContext context) {
+    final statusColor = _getStatusColor(deliveryStatus);
+    final statusIcon = _getStatusIcon(deliveryStatus);
+
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
       appBar: AppBar(
@@ -460,31 +757,124 @@ class _InfoPageState extends State<InfoPage> {
                         padding: const EdgeInsets.all(24),
                         child: Column(
                           children: [
-                            // Profile Image with fallback to default avatar
-                            CircleAvatar(
-                              radius: 50,
-                              backgroundColor: const Color(0xFF3B82F6).withOpacity(0.1),
-                              backgroundImage: profileImageUrl != null && profileImageUrl!.isNotEmpty
-                                  ? NetworkImage(profileImageUrl!)
-                                  : null,
-                              child: profileImageUrl == null || profileImageUrl!.isEmpty
-                                  ? const Icon(
-                                      Icons.person,
-                                      color: Color(0xFF3B82F6),
-                                      size: 50,
-                                    )
-                                  : null,
+                            // Enhanced Profile Image with upload functionality
+                            Stack(
+                              children: [
+                                GestureDetector(
+                                  onTap: _showImageOptions,
+                                  child: CircleAvatar(
+                                    radius: 50,
+                                    backgroundColor: const Color(0xFF3B82F6).withOpacity(0.1),
+                                    backgroundImage: profileImageUrl != null && profileImageUrl!.isNotEmpty
+                                        ? (profileImageUrl!.startsWith('data:image/') 
+                                            ? MemoryImage(base64Decode(profileImageUrl!.split(',').last))
+                                            : NetworkImage(profileImageUrl!)) as ImageProvider?
+                                        : null,
+                                    child: isUploadingImage
+                                        ? const CircularProgressIndicator(
+                                            valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF3B82F6)),
+                                          )
+                                        : profileImageUrl == null || profileImageUrl!.isEmpty
+                                            ? const Icon(
+                                                Icons.person,
+                                                color: Color(0xFF3B82F6),
+                                                size: 50,
+                                              )
+                                            : null,
+                                  ),
+                                ),
+                                // Status indicator dot
+                                Positioned(
+                                  bottom: 4,
+                                  right: 4,
+                                  child: Container(
+                                    width: 20,
+                                    height: 20,
+                                    decoration: BoxDecoration(
+                                      color: statusColor,
+                                      shape: BoxShape.circle,
+                                      border: Border.all(
+                                        color: Colors.white,
+                                        width: 2,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                                // Edit icon overlay
+                                Positioned(
+                                  bottom: 0,
+                                  right: 0,
+                                  child: Container(
+                                    width: 30,
+                                    height: 30,
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFF3B82F6),
+                                      shape: BoxShape.circle,
+                                      border: Border.all(
+                                        color: Colors.white,
+                                        width: 2,
+                                      ),
+                                    ),
+                                    child: const Icon(
+                                      Icons.camera_alt,
+                                      color: Colors.white,
+                                      size: 14,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              "Tap to change photo",
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.grey[600],
+                              ),
                             ),
                             const SizedBox(height: 20),
                             _buildInfoItem("First Name", userData?['first_name']?.toString() ?? ""),
                             _buildInfoItem("Last Name", userData?['last_name']?.toString() ?? ""),
-                            _buildInfoItem("Courier ID", userData?['driverId']?.toString() ?? userData?['courierId']?.toString() ?? ""),
                             _buildInfoItem("Email", userData?['email']?.toString() ?? ""),
                             _buildInfoItem("Phone", userData?['phone']?.toString() ?? ""),
                             _buildInfoItem("License Number", userData?['license_number']?.toString() ?? userData?['driverLicenseInfo']?.toString() ?? ""),
                             _buildInfoItem("License Expiry", _getLicenseExpiry()),
                             _buildInfoItem("Employment Date", _formatDisplayDate(userData?['created_at'] ?? userData?['createdAt'])),
-                            _buildInfoItem("Status", userData?['status']?.toString().toUpperCase() ?? "UNKNOWN"),
+                            _buildInfoItem(
+                              "Status", 
+                              deliveryStatus, 
+                              valueColor: statusColor,
+                              icon: statusIcon,
+                            ),
+                            if (activeDeliveries > 0) ...[
+                              const SizedBox(height: 8),
+                              Container(
+                                padding: const EdgeInsets.all(12),
+                                decoration: BoxDecoration(
+                                  color: Colors.orange.withOpacity(0.1),
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(color: Colors.orange.withOpacity(0.3)),
+                                ),
+                                child: Row(
+                                  children: [
+                                    Icon(
+                                      Icons.local_shipping,
+                                      color: Colors.orange[700],
+                                      size: 16,
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      "Active Deliveries: $activeDeliveries",
+                                      style: TextStyle(
+                                        color: Colors.orange[700],
+                                        fontWeight: FontWeight.w600,
+                                        fontSize: 12,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
                           ],
                         ),
                       ),

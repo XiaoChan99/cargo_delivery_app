@@ -40,10 +40,6 @@ class LiveLocationPage extends StatefulWidget {
     return cargoData?['destination'] ?? 'Delivery Point';
   }
 
-  String get status {
-    return cargoData?['status'] ?? 'pending';
-  }
-
   String _formatTime(Timestamp timestamp) {
     final date = timestamp.toDate();
     final hour = date.hour % 12;
@@ -100,6 +96,7 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
     _locationUpdateTimer?.cancel();
     super.dispose();
   }
+
   void _startLocationUpdates() {
     // Remove automatic movement - just update ETA periodically
     _locationUpdateTimer = Timer.periodic(const Duration(seconds: 30), (timer) {
@@ -191,6 +188,9 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
           
           if (deliveryQuery.docs.isNotEmpty) {
             _deliveryData = deliveryQuery.docs.first.data() as Map<String, dynamic>;
+          } else {
+            // No delivery record exists yet
+            _deliveryData = {'status': 'pending'};
           }
         }
 
@@ -222,6 +222,9 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
         
         if (deliveryQuery.docs.isNotEmpty) {
           _deliveryData = deliveryQuery.docs.first.data() as Map<String, dynamic>;
+        } else {
+          // No delivery record exists yet
+          _deliveryData = {'status': 'pending'};
         }
 
         await _generateRealisticDeliveryRoute();
@@ -319,18 +322,18 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
     }
     
     // Fallback: place near pickup location
-    // Fallback: place near pickup location
-  setState(() {
-    _courierLocation = LatLng(
-      pickupLocation.latitude + 0.009, // ~1km north
-      pickupLocation.longitude
-    );
-    _progress = 0.1;
-  });
+    setState(() {
+      _courierLocation = LatLng(
+        pickupLocation.latitude + 0.009, // ~1km north
+        pickupLocation.longitude
+      );
+      _progress = 0.1;
+    });
   
-  // Calculate initial ETA for fallback position
-  _updateETA();
-}
+    // Calculate initial ETA for fallback position
+    _updateETA();
+  }
+
   List<LatLng> _generateFallbackRoute(LatLng pickup, LatLng destination) {
     // Generate intermediate points for a realistic route
     return [
@@ -360,9 +363,9 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
     return _cargoData?['containerNo'] ?? widget.containerNo;
   }
 
+  // Get status only from CargoDelivery
   String get _status {
-    // Prioritize delivery data status, then cargo data, then widget status
-    return _deliveryData?['status'] ?? _cargoData?['status'] ?? widget.status;
+    return _deliveryData?['status'] ?? 'pending';
   }
 
   String get _pickup {
@@ -417,7 +420,7 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
         return;
       }
 
-      // Update CargoDelivery status
+      // Update CargoDelivery status only
       QuerySnapshot deliveryQuery = await _firestore
           .collection('CargoDelivery')
           .where('cargo_id', isEqualTo: _cargoId)
@@ -429,18 +432,19 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
           'status': 'delivered',
           'confirmed_at': Timestamp.now(),
           'remarks': 'Delivery completed successfully',
+          'updated_at': Timestamp.now(),
         });
-      }
-
-      // Update Cargo status
-      if (_cargoId.isNotEmpty) {
-        await _firestore
-            .collection('Cargo')
-            .doc(_cargoId)
-            .update({
-              'status': 'delivered',
-              'updated_at': Timestamp.now(),
-            });
+      } else {
+        // Create new delivery record if it doesn't exist
+        await _firestore.collection('CargoDelivery').add({
+          'cargo_id': _cargoId,
+          'courier_id': user.uid,
+          'status': 'delivered',
+          'confirmed_at': Timestamp.now(),
+          'remarks': 'Delivery completed successfully',
+          'created_at': Timestamp.now(),
+          'updated_at': Timestamp.now(),
+        });
       }
 
       // Create delivery completed notification
@@ -456,7 +460,6 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
 
       // Update local state
       setState(() {
-        _cargoData?['status'] = 'delivered';
         _deliveryData?['status'] = 'delivered';
         _progress = 1.0;
         _eta = 'Arrived';
@@ -482,32 +485,31 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
         return;
       }
 
-      // Update CargoDelivery status
+      // Update CargoDelivery status only
       QuerySnapshot deliveryQuery = await _firestore
           .collection('CargoDelivery')
           .where('cargo_id', isEqualTo: _cargoId)
           .limit(1)
           .get();
 
-      if (deliveryQuery.docs.isNotEmpty) {
-        await deliveryQuery.docs.first.reference.update({
-          'status': 'delayed',
-          'remarks': 'Delay reported: $reason. Estimated new arrival: ${DateFormat('MMM dd, yyyy - HH:mm').format(estimatedTime)}',
-          'updated_at': Timestamp.now(),
-          'estimated_arrival': Timestamp.fromDate(estimatedTime),
-        });
-      }
+      final delayData = {
+        'status': 'delayed',
+        'remarks': 'Delay reported: $reason. Estimated new arrival: ${DateFormat('MMM dd, yyyy - HH:mm').format(estimatedTime)}',
+        'updated_at': Timestamp.now(),
+        'estimated_arrival': Timestamp.fromDate(estimatedTime),
+        'delay_reason': reason,
+      };
 
-      // Update Cargo status
-      if (_cargoId.isNotEmpty) {
-        await _firestore
-            .collection('Cargo')
-            .doc(_cargoId)
-            .update({
-              'status': 'delayed',
-              'updated_at': Timestamp.now(),
-              'estimated_arrival': Timestamp.fromDate(estimatedTime),
-            });
+      if (deliveryQuery.docs.isNotEmpty) {
+        await deliveryQuery.docs.first.reference.update(delayData);
+      } else {
+        // Create new delivery record if it doesn't exist
+        await _firestore.collection('CargoDelivery').add({
+          'cargo_id': _cargoId,
+          'courier_id': user.uid,
+          ...delayData,
+          'created_at': Timestamp.now(),
+        });
       }
 
       // Create delay notification
@@ -523,7 +525,6 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
 
       // Update local state
       setState(() {
-        _cargoData?['status'] = 'delayed';
         _deliveryData?['status'] = 'delayed';
         _selectedDelayTime = null;
       });

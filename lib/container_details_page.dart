@@ -39,22 +39,58 @@ class _ContainerDetailsPageState extends State<ContainerDetailsPage> {
   }
 
   Future<void> _initializeData() async {
-    try {
-      // Use containerData from widget
-      _cargoData = widget.containerData;
-      setState(() {
-        _isLoading = false;
-      });
-      
-      // Load real-time route information
-      _loadRealTimeRouteInfo();
-    } catch (e) {
-      setState(() {
-        _error = 'Error loading cargo data: $e';
-        _isLoading = false;
-      });
-    }
+  try {
+    // Use containerData from widget
+    _cargoData = widget.containerData;
+    
+    // Load delivery status from CargoDelivery
+    await _loadDeliveryStatus();
+    
+    setState(() {
+      _isLoading = false;
+    });
+    
+    // Load real-time route information
+    _loadRealTimeRouteInfo();
+  } catch (e) {
+    setState(() {
+      _error = 'Error loading cargo data: $e';
+      _isLoading = false;
+    });
   }
+}
+
+Future<void> _loadDeliveryStatus() async {
+  try {
+    final cargoId = _cargoId;
+    if (cargoId.isEmpty) return;
+
+    // Get delivery status from CargoDelivery
+    final deliveryQuery = await _firestore
+        .collection('CargoDelivery')
+        .where('cargo_id', isEqualTo: cargoId)
+        .limit(1)
+        .get();
+
+    if (deliveryQuery.docs.isNotEmpty) {
+      final deliveryData = deliveryQuery.docs.first.data();
+      final deliveryStatus = deliveryData['status']?.toString().toLowerCase() ?? 'pending';
+      
+      // Update the cargo data with the delivery status
+      _cargoData!['status'] = deliveryStatus;
+      _cargoData!['is_cancelled'] = deliveryStatus == 'cancelled';
+    } else {
+      // No delivery record exists, use default status
+      _cargoData!['status'] = 'pending';
+      _cargoData!['is_cancelled'] = false;
+    }
+  } catch (e) {
+    print('Error loading delivery status: $e');
+    // Fallback to default status
+    _cargoData!['status'] = 'pending';
+    _cargoData!['is_cancelled'] = false;
+  }
+}
 
   Future<void> _loadRealTimeRouteInfo() async {
     if (_pickup.isEmpty || _destination.isEmpty) return;
@@ -109,147 +145,161 @@ class _ContainerDetailsPageState extends State<ContainerDetailsPage> {
   }
 
   Future<void> _updateCargoStatus(String newStatus) async {
-    // Prevent multiple simultaneous updates
-    if (_isUpdatingStatus) {
-      _showErrorModal('Please wait, update in progress...');
+  // Prevent multiple simultaneous updates
+  if (_isUpdatingStatus) {
+    _showErrorModal('Please wait, update in progress...');
+    return;
+  }
+
+  // Check if cargo is cancelled - ENHANCED CHECK
+  if (_isCancelled) {
+    _showErrorModal('This delivery has been cancelled and cannot be updated.');
+    return;
+  }
+
+  // Prevent starting delivery if cargo is cancelled
+  if (newStatus == 'in-progress' && _isCancelled) {
+    _showErrorModal('Cannot start delivery - this task has been cancelled.');
+    return;
+  }
+
+  // Check if already delivered
+  if (newStatus == 'delivered' && (_status == 'delivered' || _status == 'cancelled')) {
+    _showAlreadyConfirmedModal();
+    return;
+  }
+
+  setState(() {
+    _isUpdatingStatus = true;
+  });
+
+  try {
+    final cargoId = _cargoId;
+    final user = _auth.currentUser;
+    
+    if (cargoId.isEmpty || user == null) {
+      _showErrorModal('Unable to update status: Missing cargo ID or user');
       return;
     }
 
-    // Check if cargo is cancelled - ENHANCED CHECK
-    if (_isCancelled) {
-      _showErrorModal('This delivery has been cancelled and cannot be updated.');
-      return;
-    }
+    // Check if delivery record exists and get current status
+    final deliveryQuery = await _firestore
+        .collection('CargoDelivery')
+        .where('cargo_id', isEqualTo: cargoId)
+        .limit(1)
+        .get();
 
-    // Prevent starting delivery if cargo is cancelled
-    if (newStatus == 'in-progress' && _isCancelled) {
-      _showErrorModal('Cannot start delivery - this task has been cancelled.');
-      return;
-    }
+    String currentDeliveryStatus = 'pending';
+    String deliveryId = '';
 
-    // Check if already delivered
-    if (newStatus == 'delivered' && (_status == 'delivered' || _status == 'cancelled')) {
-      _showAlreadyConfirmedModal();
-      return;
-    }
-
-    setState(() {
-      _isUpdatingStatus = true;
-    });
-
-    try {
-      final cargoId = _cargoId;
-      final user = _auth.currentUser;
+    if (deliveryQuery.docs.isNotEmpty) {
+      final deliveryDoc = deliveryQuery.docs.first;
+      deliveryId = deliveryDoc.id;
+      currentDeliveryStatus = deliveryDoc.data()['status']?.toString().toLowerCase() ?? 'pending';
       
-      if (cargoId.isEmpty || user == null) {
-        _showErrorModal('Unable to update status: Missing cargo ID or user');
+      // Check if already in the target status
+      if (currentDeliveryStatus == newStatus) {
+        _showAlreadyConfirmedModal();
         return;
       }
+    }
 
-      // Check if cargo is already in the target status
-      final cargoDoc = await _firestore.collection('Cargo').doc(cargoId).get();
-      if (cargoDoc.exists) {
-        final currentStatus = cargoDoc.data()?['status'] ?? 'pending';
-        if (currentStatus == newStatus) {
-          _showAlreadyConfirmedModal();
-          return;
-        }
-      }
-
-      if (newStatus == 'in-progress') {
-        // Check if delivery record already exists
-        final existingDelivery = await _firestore
-            .collection('CargoDelivery')
-            .where('cargo_id', isEqualTo: cargoId)
-            .limit(1)
-            .get();
-
-        if (existingDelivery.docs.isEmpty) {
-          // Create delivery record when starting delivery
-          await _firestore.collection('CargoDelivery').add({
-            'cargo_id': cargoId,
-            'courier_id': user.uid,
-            'status': 'in-progress',
-            'confirmed_at': Timestamp.now(),
-            'confirmed_by': 'courier',
-            'proof_image': '',
-            'remarks': 'Delivery started by courier',
-          });
-        }
-      }
-
-      // Update cargo status
-      await _firestore
-          .collection('Cargo')
-          .doc(cargoId)
-          .update({
-            'status': newStatus,
-            'updated_at': Timestamp.now(),
-          });
-
-      // Update delivery record if exists
-      if (newStatus == 'delivered' || newStatus == 'cancelled') {
-        final deliveryQuery = await _firestore
-            .collection('CargoDelivery')
-            .where('cargo_id', isEqualTo: cargoId)
-            .limit(1)
-            .get();
-
-        if (deliveryQuery.docs.isNotEmpty) {
-          await deliveryQuery.docs.first.reference.update({
-            'status': newStatus,
-            'confirmed_at': Timestamp.now(),
-          });
-        }
-      }
-
-      // Create notification for status update
-      await _firestore.collection('Notifications').add({
-        'userId': user.uid,
-        'type': 'status_update',
-        'message': 'Cargo status updated to ${_getStatusText(newStatus)} for Container $_containerNo',
-        'timestamp': Timestamp.now(),
-        'read': false,
-        'cargoId': cargoId,
-        'containerNo': _containerNo,
-        'newStatus': newStatus,
-      });
-
-      // Refresh the data
-      await _initializeData();
-      
-      // Show success modal for starting delivery
-      if (newStatus == 'in-progress') {
-        _showDeliveryStartedModal();
+    if (newStatus == 'in-progress') {
+      if (deliveryQuery.docs.isEmpty) {
+        // Create delivery record when starting delivery
+        final newDelivery = await _firestore.collection('CargoDelivery').add({
+          'cargo_id': cargoId,
+          'courier_id': user.uid,
+          'status': 'in-progress',
+          'confirmed_at': Timestamp.now(),
+          'confirmed_by': 'courier',
+          'proof_image': '',
+          'remarks': 'Delivery started by courier',
+        });
+        deliveryId = newDelivery.id;
       } else {
-        _showSuccessModal('Status updated to ${_getStatusText(newStatus)}!');
+        // Update existing delivery record
+        await _firestore
+            .collection('CargoDelivery')
+            .doc(deliveryId)
+            .update({
+              'status': 'in-progress',
+              'confirmed_at': Timestamp.now(),
+            });
       }
-      
-      // Navigate to live location page if starting delivery
-      if (newStatus == 'in-progress') {
-        // Delay navigation to show the success modal first
-        Future.delayed(const Duration(seconds: 2), () {
-          if (mounted) {
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(
-                builder: (context) => LiveLocationPage(
-                  cargoData: _cargoData!,
-                ),
-              ),
-            );
-          }
+    } else if (newStatus == 'delivered' || newStatus == 'cancelled') {
+      if (deliveryQuery.docs.isNotEmpty) {
+        // Update existing delivery record
+        await _firestore
+            .collection('CargoDelivery')
+            .doc(deliveryId)
+            .update({
+              'status': newStatus,
+              'confirmed_at': Timestamp.now(),
+            });
+      } else {
+        // Create delivery record for delivered/cancelled status if it doesn't exist
+        await _firestore.collection('CargoDelivery').add({
+          'cargo_id': cargoId,
+          'courier_id': user.uid,
+          'status': newStatus,
+          'confirmed_at': Timestamp.now(),
+          'confirmed_by': 'courier',
+          'proof_image': '',
+          'remarks': 'Status updated to $newStatus by courier',
         });
       }
-    } catch (e) {
-      print('Error updating cargo status: $e');
-      _showErrorModal('Failed to update status: $e');
-    } finally {
-      setState(() {
-        _isUpdatingStatus = false;
+    }
+
+    // Create notification for status update
+    await _firestore.collection('Notifications').add({
+      'userId': user.uid,
+      'type': 'status_update',
+      'message': 'Cargo status updated to ${_getStatusText(newStatus)} for Container $_containerNo',
+      'timestamp': Timestamp.now(),
+      'read': false,
+      'cargoId': cargoId,
+      'containerNo': _containerNo,
+      'newStatus': newStatus,
+    });
+
+    // Refresh the data
+    await _initializeData();
+    
+    // Show success modal for starting delivery
+    if (newStatus == 'in-progress') {
+      _showDeliveryStartedModal();
+    } else {
+      _showSuccessModal('Status updated to ${_getStatusText(newStatus)}!');
+    }
+    
+    // Navigate to live location page if starting delivery
+    if (newStatus == 'in-progress') {
+      // Delay navigation to show the success modal first
+      Future.delayed(const Duration(seconds: 2), () {
+        if (mounted) {
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (context) => LiveLocationPage(
+                cargoData: _cargoData!,
+              ),
+            ),
+          );
+        }
       });
     }
+  } catch (e) {
+    print('Error updating cargo status: $e');
+    _showErrorModal('Failed to update status: $e');
+  } finally {
+    setState(() {
+      _isUpdatingStatus = false;
+    });
   }
+  // Refresh the data by reloading delivery status
+    await _loadDeliveryStatus();
+}
 
   // NEW METHOD: Show delivery started success modal
   void _showDeliveryStartedModal() {
@@ -599,6 +649,9 @@ class _ContainerDetailsPageState extends State<ContainerDetailsPage> {
     final cargo = _cargoData ?? {};
     final currentStatus = _status.toLowerCase();
     
+      // Determine if this is an available cargo (no delivery record or cancelled)
+    final isAvailableCargo = currentStatus == 'pending' || currentStatus == 'cancelled';
+
     return SingleChildScrollView(
       child: Column(
         children: [

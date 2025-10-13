@@ -18,72 +18,56 @@ class _NotificationsPageState extends State<NotificationsPage> {
   final FirebaseAuth _auth = FirebaseAuth.instance;
   List<Map<String, dynamic>> _notifications = [];
   bool _isLoading = true;
+  bool _indexError = false;
 
   @override
   void initState() {
     super.initState();
     _loadNotifications();
     _setupNotificationsListener();
-    _generateCargoNotifications();
+    // Delay cargo generation to avoid multiple index errors
+    Future.delayed(const Duration(seconds: 2), _generateCargoNotifications);
   }
 
   void _setupNotificationsListener() {
-  _firestore
-      .collection('notifications')
-      .where('userId', isEqualTo: widget.userId)
-      .orderBy('timestamp', descending: true)
-      .snapshots()
-      .listen((snapshot) {
-    if (mounted) {
-      List<Map<String, dynamic>> notifications = [];
-      for (var doc in snapshot.docs) {
-        var notification = doc.data();
-        notifications.add({
-          ...notification,
-          'id': doc.id,
-        });
-      }
-      setState(() {
-        _notifications = notifications;
-      });
-      
-      // Mark all as read when page is open
-      _markAllAsRead();
-    }
-  });
-}
-
-Future<void> _loadNotifications() async {
-  try {
-    QuerySnapshot notificationsSnapshot = await _firestore
-        .collection('notifications')
+    _firestore
+        .collection('Notifications')
         .where('userId', isEqualTo: widget.userId)
         .orderBy('timestamp', descending: true)
-        .get();
-
-    List<Map<String, dynamic>> notifications = [];
-    for (var doc in notificationsSnapshot.docs) {
-      var notification = doc.data() as Map<String, dynamic>;
-      notifications.add({
-        ...notification,
-        'id': doc.id,
-      });
-    }
-
-    setState(() {
-      _notifications = notifications;
-      _isLoading = false;
+        .snapshots()
+        .listen((snapshot) {
+      if (mounted) {
+        List<Map<String, dynamic>> notifications = [];
+        for (var doc in snapshot.docs) {
+          var notification = doc.data();
+          notifications.add({
+            ...notification,
+            'id': doc.id,
+          });
+        }
+        setState(() {
+          _notifications = notifications;
+          _indexError = false;
+        });
+        
+        _markAllAsRead();
+      }
+    }, onError: (error) {
+      print('Listener error: $error');
+      if (mounted) {
+        setState(() {
+          _indexError = true;
+        });
+      }
     });
+  }
 
-    // Mark all as read
-    await _markAllAsRead();
-  } catch (e) {
-    print('Error loading notifications: $e');
-    // If still getting index error, try without ordering first
+  Future<void> _loadNotifications() async {
     try {
       QuerySnapshot notificationsSnapshot = await _firestore
-          .collection('notifications')
+          .collection('Notifications')
           .where('userId', isEqualTo: widget.userId)
+          .orderBy('timestamp', descending: true)
           .get();
 
       List<Map<String, dynamic>> notifications = [];
@@ -95,96 +79,133 @@ Future<void> _loadNotifications() async {
         });
       }
 
-      // Sort manually
-      notifications.sort((a, b) {
-        Timestamp aTime = a['timestamp'] ?? Timestamp.now();
-        Timestamp bTime = b['timestamp'] ?? Timestamp.now();
-        return bTime.compareTo(aTime);
-      });
-
       setState(() {
         _notifications = notifications;
         _isLoading = false;
+        _indexError = false;
       });
 
       await _markAllAsRead();
-    } catch (e2) {
-      print('Error with fallback loading: $e2');
-      setState(() {
-        _isLoading = false;
-      });
-    }
-  }
-}
-
-  Future<void> _markAllAsRead() async {
-    for (var notification in _notifications.where((n) => n['read'] == false)) {
-      await _firestore.collection('notifications').doc(notification['id']).update({'read': true});
-    }
-  }
-
-
-  // Generate notifications for existing cargos
-  // Add this method to _NotificationsPageState class
-Future<void> _generateCargoNotifications() async {
-  try {
-    final currentUser = _auth.currentUser;
-    if (currentUser == null) return;
-
-    // Get all cargo documents
-    QuerySnapshot cargoSnapshot = await _firestore
-        .collection('Cargo')
-        .orderBy('created_at', descending: true)
-        .get();
-
-    // Get all cargo IDs that have delivery records
-    QuerySnapshot deliverySnapshot = await _firestore
-        .collection('CargoDelivery')
-        .get();
-
-    Set<String> assignedCargoIds = {};
-    for (var doc in deliverySnapshot.docs) {
-      var deliveryData = doc.data() as Map<String, dynamic>;
-      if (deliveryData['cargo_id'] != null) {
-        assignedCargoIds.add(deliveryData['cargo_id'].toString());
-      }
-    }
-
-    // Create notifications for unassigned cargos
-    for (var doc in cargoSnapshot.docs) {
-      var cargoData = doc.data() as Map<String, dynamic>;
+    } catch (e) {
+      print('Error loading notifications: $e');
       
-      // Only create notifications for cargos not assigned to any delivery
-      if (!assignedCargoIds.contains(doc.id)) {
-        // Check if notification already exists for this cargo
-        QuerySnapshot existingNotification = await _firestore
-            .collection('notifications')
-            .where('cargoId', isEqualTo: doc.id)
+      // Fallback: Try without ordering
+      try {
+        QuerySnapshot notificationsSnapshot = await _firestore
+            .collection('Notifications')
             .where('userId', isEqualTo: widget.userId)
-            .where('type', isEqualTo: 'new_cargo')
             .get();
 
-        if (existingNotification.docs.isEmpty) {
-          // Create new cargo notification
-          await _firestore.collection('notifications').add({
+        List<Map<String, dynamic>> notifications = [];
+        for (var doc in notificationsSnapshot.docs) {
+          var notification = doc.data() as Map<String, dynamic>;
+          notifications.add({
+            ...notification,
+            'id': doc.id,
+          });
+        }
+
+        // Sort manually by timestamp
+        notifications.sort((a, b) {
+          Timestamp aTime = a['timestamp'] ?? Timestamp.now();
+          Timestamp bTime = b['timestamp'] ?? Timestamp.now();
+          return bTime.compareTo(aTime);
+        });
+
+        setState(() {
+          _notifications = notifications;
+          _isLoading = false;
+          _indexError = true; // Mark that we're using fallback
+        });
+
+        await _markAllAsRead();
+      } catch (e2) {
+        print('Error with fallback loading: $e2');
+        setState(() {
+          _isLoading = false;
+          _indexError = true;
+        });
+      }
+    }
+  }
+
+  Future<void> _markAllAsRead() async {
+    try {
+      for (var notification in _notifications.where((n) => n['read'] == false)) {
+        await _firestore.collection('Notifications').doc(notification['id']).update({'read': true});
+      }
+    } catch (e) {
+      print('Error marking as read: $e');
+    }
+  }
+
+  // Simplified notification generation to avoid complex queries
+  Future<void> _generateCargoNotifications() async {
+    if (_indexError) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please create Firebase index first. Check console for link.')),
+      );
+      return;
+    }
+
+    try {
+      final currentUser = _auth.currentUser;
+      if (currentUser == null) return;
+
+      // Get all cargo documents (simple query)
+      QuerySnapshot cargoSnapshot = await _firestore
+          .collection('Cargo')
+          .get();
+
+      // Get all notifications to check for existing ones
+      QuerySnapshot existingNotifications = await _firestore
+          .collection('Notifications')
+          .where('userId', isEqualTo: widget.userId)
+          .where('type', isEqualTo: 'new_cargo')
+          .get();
+
+      Set<String> existingCargoIds = {};
+      for (var doc in existingNotifications.docs) {
+        var notification = doc.data() as Map<String, dynamic>;
+        if (notification['cargoId'] != null) {
+          existingCargoIds.add(notification['cargoId'].toString());
+        }
+      }
+
+      // Create notifications for cargos that don't have notifications yet
+      int newNotifications = 0;
+      for (var doc in cargoSnapshot.docs) {
+        if (!existingCargoIds.contains(doc.id)) {
+          var cargoData = doc.data() as Map<String, dynamic>;
+          
+          await _firestore.collection('Notifications').add({
             'userId': widget.userId,
             'type': 'new_cargo',
             'message': 'New cargo available: ${cargoData['description'] ?? 'Cargo'} from ${cargoData['origin'] ?? 'Unknown'} to ${cargoData['destination'] ?? 'Unknown'}',
-            'timestamp': cargoData['created_at'] ?? Timestamp.now(),
+            'timestamp': Timestamp.now(),
             'read': false,
             'cargoId': doc.id,
             'containerNo': 'CONT-${cargoData['item_number'] ?? 'N/A'}',
           });
+          newNotifications++;
         }
       }
+
+      // Reload notifications
+      await _loadNotifications();
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Generated $newNotifications new cargo notifications')),
+      );
+    } catch (e) {
+      print('Error generating cargo notifications: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: $e')),
+      );
     }
-
-    print('Cargo notifications generated successfully');
-  } catch (e) {
-    print('Error generating cargo notifications: $e');
   }
-}
 
+  // ... (Keep all the existing helper methods: _getNotificationIcon, _getNotificationColor, etc.)
   IconData _getNotificationIcon(String type) {
     switch (type) {
       case 'warning':
@@ -282,17 +303,14 @@ Future<void> _generateCargoNotifications() async {
     final containerNo = notification['containerNo'];
 
     if ((type == 'new_cargo' || type == 'delivery_assigned' || type == 'status_update') && cargoId != null) {
-      // Navigate to container details page
       _navigateToContainerDetails(cargoId, containerNo);
     } else {
-      // Show notification details for other types
       _showNotificationDetails(notification);
     }
   }
 
   Future<void> _navigateToContainerDetails(String cargoId, String? containerNo) async {
     try {
-      // Fetch cargo data from Firestore
       DocumentSnapshot cargoDoc = await _firestore
           .collection('Cargo')
           .doc(cargoId)
@@ -301,7 +319,6 @@ Future<void> _generateCargoNotifications() async {
       if (cargoDoc.exists) {
         final cargoData = cargoDoc.data() as Map<String, dynamic>;
         
-        // Also try to get delivery data if available
         QuerySnapshot deliverySnapshot = await _firestore
             .collection('CargoDelivery')
             .where('cargo_id', isEqualTo: cargoId)
@@ -337,7 +354,6 @@ Future<void> _generateCargoNotifications() async {
           ),
         );
       } else {
-        // If cargo not found, create basic data
         final basicData = {
           'cargo_id': cargoId,
           'containerNo': containerNo ?? 'N/A',
@@ -358,7 +374,6 @@ Future<void> _generateCargoNotifications() async {
       }
     } catch (e) {
       print('Error navigating to container details: $e');
-      // Fallback navigation with basic data
       final basicData = {
         'cargo_id': cargoId,
         'containerNo': containerNo ?? 'N/A',
@@ -438,6 +453,42 @@ Future<void> _generateCargoNotifications() async {
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Error deleting notification: $e')),
+      );
+    }
+  }
+
+  Future<void> _deleteAllNotifications() async {
+    try {
+      setState(() {
+        _isLoading = true;
+      });
+
+      QuerySnapshot notificationsSnapshot = await _firestore
+          .collection('Notifications')
+          .where('userId', isEqualTo: widget.userId)
+          .get();
+
+      final batch = _firestore.batch();
+      for (var doc in notificationsSnapshot.docs) {
+        batch.delete(doc.reference);
+      }
+      
+      await batch.commit();
+      
+      setState(() {
+        _notifications.clear();
+        _isLoading = false;
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('All notifications deleted')),
+      );
+    } catch (e) {
+      setState(() {
+        _isLoading = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error deleting all notifications: $e')),
       );
     }
   }
@@ -531,99 +582,126 @@ Future<void> _generateCargoNotifications() async {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
-      appBar: AppBar(
-        title: const Text(
-          'Notifications',
-          style: TextStyle(
-            fontWeight: FontWeight.w700,
-            color: Color(0xFF1E293B),
-          ),
-        ),
-        backgroundColor: Colors.white,
-        elevation: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: Color(0xFF1E293B)),
-          onPressed: () => Navigator.pop(context),
-        ),
-        actions: [
-          if (_notifications.isNotEmpty)
-            IconButton(
-              icon: const Icon(Icons.delete_outline, color: Color(0xFFEF4444)),
-              onPressed: () {
-                _showClearAllDialog();
-              },
+      body: Column(
+        children: [
+          // Gradient Header
+          Container(
+            width: double.infinity,
+            height: 65,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  const Color(0xFF1E40AF),
+                  const Color(0xFF3B82F6),
+                ],
+              ),
             ),
-          IconButton(
-            icon: const Icon(Icons.refresh, color: Color(0xFF3B82F6)),
-            onPressed: () {
-              _generateCargoNotifications();
-            },
-            tooltip: 'Refresh Cargo Notifications',
-          ),
-        ],
-      ),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : _notifications.isEmpty
-              ? Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(
-                        Icons.notifications_off,
-                        size: 64,
-                        color: Colors.grey[400],
-                      ),
-                      const SizedBox(height: 16),
-                      const Text(
-                        'No notifications yet',
-                        style: TextStyle(
-                          fontSize: 16,
-                          color: Color(0xFF64748B),
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      ElevatedButton(
-                        onPressed: _generateCargoNotifications,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF3B82F6),
-                          foregroundColor: Colors.white,
-                        ),
-                        child: const Text('Load Cargo Notifications'),
-                      ),
-                    ],
+            child: Padding(
+              padding: const EdgeInsets.only(top: 1, left: 20, right: 20),
+              child: Row(
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.arrow_back, color: Colors.white),
+                    onPressed: () => Navigator.pop(context),
                   ),
-                )
-              : RefreshIndicator(
-                  onRefresh: _loadNotifications,
-                  child: Column(
-                    children: [
-                      // Statistics bar
-                      Container(
-                        padding: const EdgeInsets.all(16),
-                        color: Colors.white,
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceAround,
+                  const SizedBox(width: 8),
+                  const Text(
+                    'Notifications',
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w700,
+                      color: Colors.white,
+                    ),
+                  ),
+                  const Spacer(),
+                  if (_notifications.isNotEmpty)
+                    IconButton(
+                      icon: const Icon(Icons.delete_outline, color: Colors.white),
+                      onPressed: () {
+                        _showClearAllDialog();
+                      },
+                      tooltip: 'Delete All Notifications',
+                    ),
+                  IconButton(
+                    icon: const Icon(Icons.refresh, color: Colors.white),
+                    onPressed: _generateCargoNotifications,
+                    tooltip: 'Refresh Notifications',
+                  ),
+                ],
+              ),
+            ),
+          ),
+          // Index Error Warning
+          if (_indexError)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              color: Colors.orange[100],
+              child: Row(
+                children: [
+                  Icon(Icons.warning, color: Colors.orange[800]),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Firebase index needed. Click the link in console to create it.',
+                      style: TextStyle(
+                        color: Colors.orange[800],
+                        fontSize: 12,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          Expanded(
+            child: _isLoading
+                ? const Center(child: CircularProgressIndicator())
+                : _notifications.isEmpty
+                    ? Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            _buildStatItem(
-                              'Total',
-                              _notifications.length.toString(),
-                              Colors.blue,
+                            Icon(
+                              Icons.notifications_off,
+                              size: 64,
+                              color: Colors.grey[400],
                             ),
-                            _buildStatItem(
-                              'Unread',
-                              _notifications.where((n) => n['read'] == false).length.toString(),
-                              Colors.red,
+                            const SizedBox(height: 16),
+                            const Text(
+                              'No notifications yet',
+                              style: TextStyle(
+                                fontSize: 16,
+                                color: Color(0xFF64748B),
+                              ),
                             ),
-                            _buildStatItem(
-                              'Cargos',
-                              _notifications.where((n) => n['type'] == 'new_cargo').length.toString(),
-                              Colors.green,
+                            const SizedBox(height: 8),
+                            ElevatedButton(
+                              onPressed: _generateCargoNotifications,
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: const Color(0xFF3B82F6),
+                                foregroundColor: Colors.white,
+                              ),
+                              child: const Text('Load Notifications'),
                             ),
+                            if (_indexError)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 16),
+                                child: Text(
+                                  'Index setup required for full functionality',
+                                  style: TextStyle(
+                                    color: Colors.orange[700],
+                                    fontSize: 12,
+                                  ),
+                                  textAlign: TextAlign.center,
+                                ),
+                              ),
                           ],
                         ),
-                      ),
-                      Expanded(
+                      )
+                    : RefreshIndicator(
+                        onRefresh: _loadNotifications,
                         child: ListView.builder(
                           padding: const EdgeInsets.all(16),
                           itemCount: _notifications.length,
@@ -648,31 +726,9 @@ Future<void> _generateCargoNotifications() async {
                           },
                         ),
                       ),
-                    ],
-                  ),
-                ),
-    );
-  }
-
-  Widget _buildStatItem(String label, String value, Color color) {
-    return Column(
-      children: [
-        Text(
-          value,
-          style: TextStyle(
-            fontSize: 18,
-            fontWeight: FontWeight.bold,
-            color: color,
           ),
-        ),
-        Text(
-          label,
-          style: const TextStyle(
-            fontSize: 12,
-            color: Colors.grey,
-          ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 
@@ -682,7 +738,7 @@ Future<void> _generateCargoNotifications() async {
       builder: (BuildContext context) {
         return AlertDialog(
           title: const Text("Clear All Notifications"),
-          content: const Text("Are you sure you want to delete all notifications?"),
+          content: const Text("Are you sure you want to delete all notifications? This action cannot be undone."),
           actions: [
             TextButton(
               onPressed: () => Navigator.of(context).pop(),
@@ -691,9 +747,7 @@ Future<void> _generateCargoNotifications() async {
             TextButton(
               onPressed: () async {
                 Navigator.of(context).pop();
-                for (var notification in _notifications) {
-                  await _deleteNotification(notification['id']);
-                }
+                await _deleteAllNotifications();
               },
               child: const Text(
                 "Clear All",

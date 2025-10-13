@@ -4,6 +4,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
 import 'dart:math';
 import 'dart:ui' as ui;
+
 class AnalyticsPage extends StatefulWidget {
   final String userId;
 
@@ -51,7 +52,7 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
 
   Future<void> _loadBasicStats() async {
     try {
-      // Get total deliveries count
+      // Get total deliveries count (only deliveries accepted by this courier)
       QuerySnapshot totalSnapshot = await _firestore
           .collection('CargoDelivery')
           .where('courier_id', isEqualTo: widget.userId)
@@ -78,6 +79,13 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
           .where('status', isEqualTo: 'delayed')
           .get();
 
+      // Get cancelled deliveries
+      QuerySnapshot cancelledSnapshot = await _firestore
+          .collection('CargoDelivery')
+          .where('courier_id', isEqualTo: widget.userId)
+          .where('status', isEqualTo: 'cancelled')
+          .get();
+
       // Calculate average delivery time
       double averageDeliveryTime = await _calculateAverageDeliveryTime();
 
@@ -87,6 +95,7 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
           'completedDeliveries': completedSnapshot.docs.length,
           'inProgressDeliveries': inProgressSnapshot.docs.length,
           'delayedDeliveries': delayedSnapshot.docs.length,
+          'cancelledDeliveries': cancelledSnapshot.docs.length,
           'completionRate': totalSnapshot.docs.isNotEmpty 
               ? (completedSnapshot.docs.length / totalSnapshot.docs.length * 100).toStringAsFixed(1)
               : '0.0',
@@ -143,6 +152,7 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
         'Completed': 0,
         'In Progress': 0,
         'Delayed': 0,
+        'Cancelled': 0,
         'Pending': 0,
       };
 
@@ -156,6 +166,8 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
           statusCount['In Progress'] = statusCount['In Progress']! + 1;
         } else if (status == 'delayed') {
           statusCount['Delayed'] = statusCount['Delayed']! + 1;
+        } else if (status == 'cancelled') {
+          statusCount['Cancelled'] = statusCount['Cancelled']! + 1;
         } else {
           statusCount['Pending'] = statusCount['Pending']! + 1;
         }
@@ -234,6 +246,8 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
         return const Color(0xFF3B82F6); // Blue
       case 'Delayed':
         return const Color(0xFFF59E0B); // Amber
+      case 'Cancelled':
+        return const Color(0xFFEF4444); // Red
       case 'Pending':
         return const Color(0xFF64748B); // Slate
       default:
@@ -392,7 +406,7 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
           ),
           const SizedBox(height: 8),
           Text(
-            '${_analyticsData['totalDeliveries'] ?? 0} total deliveries • ${_analyticsData['completionRate'] ?? '0'}% completion rate',
+            '${_analyticsData['totalDeliveries'] ?? 0} accepted deliveries • ${_analyticsData['completionRate'] ?? '0'}% completion rate',
             style: const TextStyle(
               fontSize: 14,
               color: Colors.white70,
@@ -465,6 +479,12 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
                 'Delayed',
                 _analyticsData['delayedDeliveries'].toString(),
                 Icons.warning_amber_outlined,
+                const Color(0xFFF59E0B),
+              ),
+              _buildStatCard(
+                'Cancelled',
+                _analyticsData['cancelledDeliveries'].toString(),
+                Icons.cancel_outlined,
                 const Color(0xFFEF4444),
               ),
             ],
@@ -847,7 +867,7 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
   }
 }
 
-// Updated Pie Chart Widget to accept custom total
+// Pie Chart Widget
 class PieChartWidget extends StatelessWidget {
   final List<Map<String, dynamic>> data;
   final int total;
