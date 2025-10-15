@@ -273,7 +273,7 @@ class _CourierRegistrationPageState extends State<CourierRegistrationPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF8FAFC), // Light blue-gray background
+      backgroundColor: const Color(0xFFF8FAFC),
       appBar: AppBar(
         title: const Text(
           'Courier Registration',
@@ -283,7 +283,18 @@ class _CourierRegistrationPageState extends State<CourierRegistrationPage> {
           ),
         ),
         centerTitle: true,
-        backgroundColor: const Color(0xFF1E40AF), // Keeping the blue app bar
+        flexibleSpace: Container(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: [
+                Color(0xFF1E40AF),
+                Color(0xFF3B82F6),
+              ],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+          ),
+        ),
         elevation: 0,
         leading: IconButton(
           icon: const Icon(Icons.arrow_back, color: Colors.white),

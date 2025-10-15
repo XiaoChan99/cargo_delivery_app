@@ -958,7 +958,8 @@ Future<void> _loadDeliveryStatus() async {
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(12),
                       ),
-                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      padding: const EdgeInsets.symmetric(vertical: 18),
+                      minimumSize: const Size(double.infinity, 56),
                     ),
                     onPressed: _isCancelled ? null : () {
                       Navigator.push(
@@ -972,7 +973,7 @@ Future<void> _loadDeliveryStatus() async {
                         ),
                       );
                     },
-                    icon: const Icon(Icons.navigation_rounded),
+                    icon: const Icon(Icons.navigation_rounded, size: 22),
                     label: const Text(
                       "Open Navigation",
                       style: TextStyle(
@@ -988,119 +989,201 @@ Future<void> _loadDeliveryStatus() async {
 
           const SizedBox(height: 16),
 
-          // Action Buttons
+          // Action Buttons - Responsive Layout
           Container(
             margin: const EdgeInsets.symmetric(horizontal: 16),
-            child: Column(
-              children: [
-                // First row of buttons
-                LayoutBuilder(
-                  builder: (context, constraints) {
-                    final isSmallScreen = constraints.maxWidth < 360;
-                    return isSmallScreen
-                        ? Column(
-                            children: [
-                              _buildActionButton(
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final screenWidth = constraints.maxWidth;
+                final isSmallScreen = screenWidth < 400;
+                
+                // Determine which buttons to show based on status
+                final currentStatus = _status.toLowerCase();
+                final showStartButton = currentStatus != 'in-progress' && 
+                                      currentStatus != 'in_transit' && 
+                                      currentStatus != 'delivered' && 
+                                      !_isCancelled;
+                final showCancelButton = !_isCancelled && currentStatus != 'delivered';
+                final showConfirmButton = (currentStatus == 'in-progress' || 
+                                         currentStatus == 'in_transit') && 
+                                         !_isCancelled;
+                final showReportButton = !_isCancelled;
+
+                // For very small screens, use column layout
+                if (isSmallScreen) {
+                  return Column(
+                    children: [
+                      // Report Issue Button (always first)
+                      if (showReportButton) ...[
+                        _buildResponsiveActionButton(
+                          icon: Icons.report_problem_rounded,
+                          text: "Report Issue",
+                          isPrimary: false,
+                          color: const Color(0xFFF59E0B),
+                          onPressed: () => _showReportIssueModal(),
+                          isSmallScreen: isSmallScreen,
+                        ),
+                        const SizedBox(height: 8),
+                      ],
+                      
+                      // Start Delivery Button
+                      if (showStartButton) ...[
+                        _buildResponsiveActionButton(
+                          icon: Icons.play_arrow_rounded,
+                          text: _isUpdatingStatus ? "Starting..." : "Start Delivery",
+                          isPrimary: true,
+                          color: const Color(0xFF3B82F6),
+                          onPressed: _isUpdatingStatus ? null : () => _updateCargoStatus('in-progress'),
+                          isSmallScreen: isSmallScreen,
+                        ),
+                        const SizedBox(height: 8),
+                      ],
+                      
+                      // Cancel Task Button
+                      if (showCancelButton) ...[
+                        _buildResponsiveActionButton(
+                          icon: Icons.cancel_rounded,
+                          text: "Cancel Task",
+                          isPrimary: false,
+                          color: const Color(0xFFEF4444),
+                          onPressed: () => _showCancelConfirmation(),
+                          isSmallScreen: isSmallScreen,
+                        ),
+                        const SizedBox(height: 8),
+                      ],
+                      
+                      // Confirm Delivery Button
+                      if (showConfirmButton) ...[
+                        _buildResponsiveActionButton(
+                          icon: Icons.check_circle_rounded,
+                          text: _isUpdatingStatus ? "Confirming..." : "Confirm Delivery",
+                          isPrimary: true,
+                          color: const Color(0xFF10B981),
+                          onPressed: _isUpdatingStatus ? null : () => _updateCargoStatus('delivered'),
+                          isSmallScreen: isSmallScreen,
+                        ),
+                      ],
+                    ],
+                  );
+                } 
+                // For medium screens, use 2-column layout
+                else if (screenWidth < 600) {
+                  return Column(
+                    children: [
+                      // First row: Report Issue + Start Delivery
+                      Row(
+                        children: [
+                          if (showReportButton) 
+                            Expanded(
+                              child: _buildResponsiveActionButton(
                                 icon: Icons.report_problem_rounded,
                                 text: "Report Issue",
                                 isPrimary: false,
                                 color: const Color(0xFFF59E0B),
-                                onPressed: _isCancelled ? null : () => _showReportIssueModal(),
+                                onPressed: () => _showReportIssueModal(),
+                                isSmallScreen: isSmallScreen,
                               ),
-                              const SizedBox(height: 8),
-                              if (currentStatus != 'in-progress' && currentStatus != 'in_transit' && currentStatus != 'delivered' && !_isCancelled)
-                                _buildActionButton(
-                                  icon: Icons.play_arrow_rounded,
-                                  text: _isUpdatingStatus ? "Starting..." : "Start Delivery",
-                                  isPrimary: true,
-                                  color: const Color(0xFF3B82F6),
-                                  onPressed: _isUpdatingStatus || _isCancelled ? null : () => _updateCargoStatus('in-progress'),
-                                ),
-                            ],
-                          )
-                        : Row(
-                            children: [
-                              Expanded(
-                                child: _buildActionButton(
-                                  icon: Icons.report_problem_rounded,
-                                  text: "Report Issue",
-                                  isPrimary: false,
-                                  color: const Color(0xFFF59E0B),
-                                  onPressed: _isCancelled ? null : () => _showReportIssueModal(),
-                                ),
+                            ),
+                          if (showReportButton && showStartButton) 
+                            const SizedBox(width: 8),
+                          if (showStartButton)
+                            Expanded(
+                              child: _buildResponsiveActionButton(
+                                icon: Icons.play_arrow_rounded,
+                                text: _isUpdatingStatus ? "Starting..." : "Start Delivery",
+                                isPrimary: true,
+                                color: const Color(0xFF3B82F6),
+                                onPressed: _isUpdatingStatus ? null : () => _updateCargoStatus('in-progress'),
+                                isSmallScreen: isSmallScreen,
                               ),
-                              const SizedBox(width: 8),
-                              if (currentStatus != 'in-progress' && currentStatus != 'in_transit' && currentStatus != 'delivered' && !_isCancelled)
-                                Expanded(
-                                  child: _buildActionButton(
-                                    icon: Icons.play_arrow_rounded,
-                                    text: _isUpdatingStatus ? "Starting..." : "Start Delivery",
-                                    isPrimary: true,
-                                    color: const Color(0xFF3B82F6),
-                                    onPressed: _isUpdatingStatus || _isCancelled ? null : () => _updateCargoStatus('in-progress'),
-                                  ),
-                                ),
-                            ],
-                          );
-                  },
-                ),
-                
-                const SizedBox(height: 8),
-                
-                // Second row of buttons
-                LayoutBuilder(
-                  builder: (context, constraints) {
-                    final isSmallScreen = constraints.maxWidth < 360;
-                    return isSmallScreen
-                        ? Column(
-                            children: [
-                              if (!_isCancelled && currentStatus != 'delivered')
-                                _buildActionButton(
-                                  icon: Icons.cancel_rounded,
-                                  text: "Cancel Task",
-                                  isPrimary: false,
-                                  color: const Color(0xFFEF4444),
-                                  onPressed: _isCancelled ? null : () => _showCancelConfirmation(),
-                                ),
-                              const SizedBox(height: 8),
-                              if ((currentStatus == 'in-progress' || currentStatus == 'in_transit') && !_isCancelled)
-                                _buildActionButton(
-                                  icon: Icons.check_circle_rounded,
-                                  text: _isUpdatingStatus ? "Confirming..." : "Confirm Delivery",
-                                  isPrimary: true,
-                                  color: const Color(0xFF10B981),
-                                  onPressed: _isUpdatingStatus || _isCancelled ? null : () => _updateCargoStatus('delivered'),
-                                ),
-                            ],
-                          )
-                        : Row(
-                            children: [
-                              if (!_isCancelled && currentStatus != 'delivered')
-                                Expanded(
-                                  child: _buildActionButton(
-                                    icon: Icons.cancel_rounded,
-                                    text: "Cancel Task",
-                                    isPrimary: false,
-                                    color: const Color(0xFFEF4444),
-                                    onPressed: _isCancelled ? null : () => _showCancelConfirmation(),
-                                  ),
-                                ),
-                              if (!_isCancelled && currentStatus != 'delivered') const SizedBox(width: 8),
-                              if ((currentStatus == 'in-progress' || currentStatus == 'in_transit') && !_isCancelled)
-                                Expanded(
-                                  child: _buildActionButton(
-                                    icon: Icons.check_circle_rounded,
-                                    text: _isUpdatingStatus ? "Confirming..." : "Confirm Delivery",
-                                    isPrimary: true,
-                                    color: const Color(0xFF10B981),
-                                    onPressed: _isUpdatingStatus || _isCancelled ? null : () => _updateCargoStatus('delivered'),
-                                  ),
-                                ),
-                            ],
-                          );
-                  },
-                ),
-              ],
+                            ),
+                        ],
+                      ),
+                      
+                      if ((showCancelButton || showConfirmButton)) const SizedBox(height: 8),
+                      
+                      // Second row: Cancel + Confirm
+                      Row(
+                        children: [
+                          if (showCancelButton)
+                            Expanded(
+                              child: _buildResponsiveActionButton(
+                                icon: Icons.cancel_rounded,
+                                text: "Cancel Task",
+                                isPrimary: false,
+                                color: const Color(0xFFEF4444),
+                                onPressed: () => _showCancelConfirmation(),
+                                isSmallScreen: isSmallScreen,
+                              ),
+                            ),
+                          if (showCancelButton && showConfirmButton) 
+                            const SizedBox(width: 8),
+                          if (showConfirmButton)
+                            Expanded(
+                              child: _buildResponsiveActionButton(
+                                icon: Icons.check_circle_rounded,
+                                text: _isUpdatingStatus ? "Confirming..." : "Confirm Delivery",
+                                isPrimary: true,
+                                color: const Color(0xFF10B981),
+                                onPressed: _isUpdatingStatus ? null : () => _updateCargoStatus('delivered'),
+                                isSmallScreen: isSmallScreen,
+                              ),
+                            ),
+                        ],
+                      ),
+                    ],
+                  );
+                } 
+                // For larger screens, use horizontal layout with proper spacing
+                else {
+                  return Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    alignment: WrapAlignment.spaceEvenly,
+                    children: [
+                      if (showReportButton)
+                        _buildResponsiveActionButton(
+                          icon: Icons.report_problem_rounded,
+                          text: "Report Issue",
+                          isPrimary: false,
+                          color: const Color(0xFFF59E0B),
+                          onPressed: () => _showReportIssueModal(),
+                          isSmallScreen: isSmallScreen,
+                        ),
+                      
+                      if (showStartButton)
+                        _buildResponsiveActionButton(
+                          icon: Icons.play_arrow_rounded,
+                          text: _isUpdatingStatus ? "Starting..." : "Start Delivery",
+                          isPrimary: true,
+                          color: const Color(0xFF3B82F6),
+                          onPressed: _isUpdatingStatus ? null : () => _updateCargoStatus('in-progress'),
+                          isSmallScreen: isSmallScreen,
+                        ),
+                      
+                      if (showCancelButton)
+                        _buildResponsiveActionButton(
+                          icon: Icons.cancel_rounded,
+                          text: "Cancel Task",
+                          isPrimary: false,
+                          color: const Color(0xFFEF4444),
+                          onPressed: () => _showCancelConfirmation(),
+                          isSmallScreen: isSmallScreen,
+                        ),
+                      
+                      if (showConfirmButton)
+                        _buildResponsiveActionButton(
+                          icon: Icons.check_circle_rounded,
+                          text: _isUpdatingStatus ? "Confirming..." : "Confirm Delivery",
+                          isPrimary: true,
+                          color: const Color(0xFF10B981),
+                          onPressed: _isUpdatingStatus ? null : () => _updateCargoStatus('delivered'),
+                          isSmallScreen: isSmallScreen,
+                        ),
+                    ],
+                  );
+                }
+              },
             ),
           ),
 
@@ -1309,35 +1392,44 @@ Future<void> _loadDeliveryStatus() async {
     );
   }
 
-  Widget _buildActionButton({
+  Widget _buildResponsiveActionButton({
     required IconData icon,
     required String text,
     required bool isPrimary,
     required Color color,
     required VoidCallback? onPressed,
+    required bool isSmallScreen,
   }) {
-    return ElevatedButton.icon(
-      style: ElevatedButton.styleFrom(
-        backgroundColor: isPrimary ? color : Colors.white,
-        foregroundColor: isPrimary ? Colors.white : color,
-        elevation: 0,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(12),
-          side: isPrimary ? BorderSide.none : BorderSide(color: color, width: 1.5),
+    return SizedBox(
+      width: isSmallScreen ? double.infinity : null,
+      child: ElevatedButton.icon(
+        style: ElevatedButton.styleFrom(
+          backgroundColor: isPrimary ? color : Colors.white,
+          foregroundColor: isPrimary ? Colors.white : color,
+          elevation: 0,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+            side: isPrimary ? BorderSide.none : BorderSide(color: color, width: 1.5),
+          ),
+          padding: EdgeInsets.symmetric(
+            vertical: 16,
+            horizontal: isSmallScreen ? 24 : 16,
+          ),
+          minimumSize: isSmallScreen ? const Size(double.infinity, 50) : const Size(0, 50),
         ),
-        padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 16),
-      ),
-      onPressed: onPressed,
-      icon: Icon(
-        icon,
-        size: 20,
-      ),
-      label: Text(
-        text,
-        style: TextStyle(
-          fontSize: 14,
-          fontWeight: FontWeight.w600,
-          color: isPrimary ? Colors.white : color,
+        onPressed: onPressed,
+        icon: Icon(
+          icon,
+          size: isSmallScreen ? 22 : 20,
+        ),
+        label: Text(
+          text,
+          style: TextStyle(
+            fontSize: isSmallScreen ? 16 : 14,
+            fontWeight: FontWeight.w600,
+            color: isPrimary ? Colors.white : color,
+          ),
+          textAlign: isSmallScreen ? TextAlign.center : TextAlign.left,
         ),
       ),
     );

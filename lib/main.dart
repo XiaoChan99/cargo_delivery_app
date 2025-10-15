@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'firebase_options.dart';
-import 'loading_screen.dart';
 import 'login_page.dart';
 import 'registration_page.dart';
 import 'homepage.dart';
@@ -19,6 +18,7 @@ import 'terms_privacy_page.dart';
 import 'contact_support_page.dart';
 import 'landing_page.dart';
 import 'courier_registration.dart';
+  
 
 void main() {
   runApp(const CargoDeliveryApp());
@@ -54,9 +54,20 @@ class _CargoDeliveryAppState extends State<CargoDeliveryApp> {
           return const MainApp();
         }
 
-        // Otherwise, show something whilst waiting for initialization to complete
-        return const MaterialApp(
-          home: LoadingScreen(),
+        // Otherwise, show a simple loading indicator while waiting for initialization
+        return MaterialApp(
+          home: Scaffold(
+            body: Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  CircularProgressIndicator(),
+                  SizedBox(height: 20),
+                  Text('Initializing...'),
+                ],
+              ),
+            ),
+          ),
         );
       },
     );
@@ -76,11 +87,9 @@ class MainApp extends StatelessWidget {
         fontFamily: 'Roboto',
         visualDensity: VisualDensity.adaptivePlatformDensity,
       ),
-      // REMOVE the 'home' property and use only routes
-      initialRoute: '/loading',
+      // Start directly with the landing page
+      home: const LandingPage(),
       routes: {
-        '/loading': (context) => const LoadingScreen(),
-        '/': (context) => const LandingPage(), // This is now your initial route after loading
         '/login': (context) => const LoginPage(),
         '/registration': (context) => const RegistrationPage(),
         '/home': (context) => const HomePage(),

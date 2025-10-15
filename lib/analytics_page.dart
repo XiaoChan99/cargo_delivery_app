@@ -286,26 +286,44 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text(
-          'Performance Analytics',
-          style: TextStyle(
-            fontWeight: FontWeight.w600,
-            color: Color(0xFF1E293B),
+          title: const Text(
+            'Performance Analytics',
+            style: TextStyle(
+              fontWeight: FontWeight.w600,
+              color: Colors.white,
+            ),
+          ),
+      flexibleSpace: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              Color(0xFF1E40AF),
+              Color(0xFF3B82F6),
+            ],
           ),
         ),
-        backgroundColor: Colors.white,
-        elevation: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: Color(0xFF1E293B)),
-          onPressed: () => Navigator.pop(context),
-        ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh, color: Color(0xFF3B82F6)),
-            onPressed: _loadAnalyticsData,
-          ),
-        ],
       ),
+      elevation: 2,
+      leading: IconButton(
+        icon: Container(
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: Colors.white.withOpacity(0.2),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: const Icon(Icons.arrow_back_rounded, color: Colors.white, size: 20),
+        ),
+        onPressed: () => Navigator.pop(context),
+      ),
+      actions: [
+        IconButton(
+          icon: const Icon(Icons.refresh, color: Colors.white),
+          onPressed: _loadAnalyticsData,
+        ),
+      ],
+    ),
       backgroundColor: const Color(0xFFF8FAFC),
       body: _isLoading
           ? const Center(
@@ -382,7 +400,10 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
         gradient: const LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [Color(0xFF3B82F6), Color(0xFF1D4ED8)],
+          colors: [
+            Color(0xFF1E40AF), // Darker blue
+            Color(0xFF3B82F6), // Lighter blue
+          ],
         ),
         borderRadius: BorderRadius.circular(16),
         boxShadow: [
@@ -393,24 +414,71 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
           ),
         ],
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
         children: [
-          const Text(
-            'Delivery Analytics',
-            style: TextStyle(
-              fontSize: 20,
-              fontWeight: FontWeight.w700,
+          // Icon section
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.2),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(
+              Icons.analytics,
               color: Colors.white,
+              size: 32,
             ),
           ),
-          const SizedBox(height: 8),
-          Text(
-            '${_analyticsData['totalDeliveries'] ?? 0} accepted deliveries • ${_analyticsData['completionRate'] ?? '0'}% completion rate',
-            style: const TextStyle(
-              fontSize: 14,
-              color: Colors.white70,
+          const SizedBox(width: 16),
+          // Text section
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Delivery Analytics',
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.white,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Row(
+                  children: [
+                    const Icon(Icons.check_circle, size: 16, color: Colors.white70),
+                    const SizedBox(width: 6),
+                    Text(
+                      '${_analyticsData['completedDeliveries'] ?? 0} completed deliveries',
+                      style: const TextStyle(
+                        fontSize: 14,
+                        color: Colors.white70,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 2),
+                Row(
+                  children: [
+                    const Icon(Icons.trending_up, size: 16, color: Colors.white70),
+                    const SizedBox(width: 6),
+                    Text(
+                      '${_analyticsData['completionRate'] ?? '0'}% completion rate',
+                      style: const TextStyle(
+                        fontSize: 14,
+                        color: Colors.white70,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
             ),
+          ),
+          // Additional icon
+          const Icon(
+            Icons.bar_chart,
+            color: Colors.white,
+            size: 32,
           ),
         ],
       ),
@@ -457,12 +525,6 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
             mainAxisSpacing: 12,
             childAspectRatio: 1.6,
             children: [
-              _buildStatCard(
-                'Total Deliveries',
-                _analyticsData['totalDeliveries'].toString(),
-                Icons.local_shipping_outlined,
-                const Color(0xFF3B82F6),
-              ),
               _buildStatCard(
                 'Completed',
                 _analyticsData['completedDeliveries'].toString(),

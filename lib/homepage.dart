@@ -11,9 +11,7 @@ import 'notifications_page.dart';
 import 'live_location_page.dart';
 import 'analytics_page.dart';
 import 'order_history_page.dart';
-
-
-
+import 'status_update_page.dart'; 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
 
@@ -1297,6 +1295,16 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
                           ),
                         ),
                       );
+                    } else if (status == 'delayed') {
+                      // Navigate to StatusUpdatePage for delayed deliveries
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => StatusUpdatePage(
+                            cargoData: delivery,
+                          ),
+                        ),
+                      );
                     } else {
                       // Navigate to container details for available/pending deliveries
                       Navigator.push(
@@ -1319,7 +1327,11 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
                     padding: const EdgeInsets.symmetric(vertical: 12),
                   ),
                   child: Text(
-                    status == 'in-progress' || status == 'in_transit' ? 'Track Now' : 'View Details',
+                    status == 'in-progress' || status == 'in_transit' 
+                        ? 'Track Now' 
+                        : status == 'delayed'
+                            ? 'Update Status'
+                            : 'View Details',
                     style: const TextStyle(fontWeight: FontWeight.w600),
                   ),
                 ),
