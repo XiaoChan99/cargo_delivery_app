@@ -616,7 +616,7 @@ class _LiveMapPageState extends State<LiveMapPage> {
           ),
           LegendItem(
             color: const Color(0xFF8B5CF6),
-            label: 'Available Cargo',
+            label: 'Cargo Destination',
             icon: Icons.inventory_2,
           ),
           LegendItem(

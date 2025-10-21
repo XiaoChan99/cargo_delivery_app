@@ -9,6 +9,7 @@ import 'livemap_page.dart';
 import 'settings_page.dart';
 import 'dart:convert';
 import 'dart:typed_data';
+import 'order_history_page.dart';
 
 class SchedulePage extends StatefulWidget {
   const SchedulePage({super.key});
@@ -136,10 +137,7 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
   Future<void> _loadInProgressDeliveries() async {
     try {
       final user = _auth.currentUser;
-      if (user == null) return;Future<void> _loadInProgressDeliveries() async {
-  try {
-    final user = _auth.currentUser;
-    if (user == null) return;
+      if (user == null) return;
 
     QuerySnapshot deliverySnapshot = await _firestore
         .collection('CargoDelivery')
@@ -197,62 +195,6 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
     print('Error loading in-progress deliveries: $e');
   }
 }
-      QuerySnapshot deliverySnapshot = await _firestore
-          .collection('CargoDelivery')
-          .where('courier_id', isEqualTo: user.uid)
-          .get();
-
-      List<Map<String, dynamic>> inProgressDeliveries = [];
-      
-      for (var doc in deliverySnapshot.docs) {
-        var deliveryData = doc.data() as Map<String, dynamic>;
-        String status = deliveryData['status']?.toString().toLowerCase() ?? '';
-        
-        // Only include in-progress, in_transit, assigned, or delayed statuses
-        if (status == 'in-progress' || status == 'in_transit' || status == 'assigned' || status == 'delayed') {
-          try {
-            DocumentSnapshot cargoDoc = await _firestore
-                .collection('Cargo')
-                .doc(deliveryData['cargo_id'].toString())
-                .get();
-
-            if (cargoDoc.exists) {
-              var cargoData = cargoDoc.data() as Map<String, dynamic>;
-              
-              Map<String, dynamic> combinedData = {
-                'delivery_id': doc.id,
-                'cargo_id': deliveryData['cargo_id'],
-                'containerNo': 'CONT-${cargoData['item_number'] ?? 'N/A'}',
-                'status': deliveryData['status'] ?? 'in-progress',
-                'pickupLocation': cargoData['origin'] ?? 'Port Terminal',
-                'destination': cargoData['destination'] ?? 'Delivery Point',
-                'confirmed_at': deliveryData['confirmed_at'],
-                'courier_id': deliveryData['courier_id'],
-                'description': cargoData['description'] ?? 'N/A',
-                'weight': cargoData['weight'] ?? 0.0,
-                'value': cargoData['value'] ?? 0.0,
-                'hs_code': cargoData['hs_code'] ?? 'N/A',
-                'quantity': cargoData['quantity'] ?? 0,
-                'item_number': cargoData['item_number'] ?? 0,
-                'proof_image': deliveryData['proof_image'],
-                'confirmed_by': deliveryData['confirmed_by'],
-                'remarks': deliveryData['remarks'],
-              };
-              inProgressDeliveries.add(combinedData);
-            }
-          } catch (e) {
-            print('Error loading cargo details for delivery: $e');
-          }
-        }
-      }
-
-      setState(() {
-        _inProgressDeliveries = inProgressDeliveries;
-      });
-    } catch (e) {
-      print('Error loading in-progress deliveries: $e');
-    }
-  }
   Future<void> _processUserData(Map<String, dynamic> data, String role) async {
     Uint8List? decodedImage;
     
@@ -446,6 +388,27 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
                                 ),
                               ],
                             ),
+                            // Review Logs Icon Button in Header
+                            IconButton(
+                              onPressed: () {
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(builder: (context) => const OrderHistoryPage()),
+                                );
+                              },
+                              icon: Container(
+                                padding: const EdgeInsets.all(8),
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withOpacity(0.2),
+                                  shape: BoxShape.circle,
+                                ),
+                                child: const Icon(
+                                  Icons.history_rounded,
+                                  color: Colors.white,
+                                  size: 20,
+                                ),
+                              ),
+                            ),
                           ],
                         ),
                         const SizedBox(height: 16),
@@ -456,8 +419,6 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
                       ],
                     ),
                   ),
-
-                  const SizedBox(height: 16),
 
                   if (_availableCargos.isNotEmpty)
                     _buildCargoSection(

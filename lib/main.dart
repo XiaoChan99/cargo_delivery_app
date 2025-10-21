@@ -18,7 +18,7 @@ import 'terms_privacy_page.dart';
 import 'contact_support_page.dart';
 import 'landing_page.dart';
 import 'courier_registration.dart';
-  
+import 'review_logs_page.dart';
 
 void main() {
   runApp(const CargoDeliveryApp());
@@ -96,6 +96,7 @@ class MainApp extends StatelessWidget {
         '/schedule': (context) => const SchedulePage(),
         '/livemap': (context) => const LiveMapPage(),
         '/settings': (context) => const SettingsPage(),
+        'review_logs': (context) => const ReviewLogsPage(),
         '/live_location': (context) {
           final args = ModalRoute.of(context)!.settings.arguments as Map<String, dynamic>;
           return LiveLocationPage(
