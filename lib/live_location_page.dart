@@ -64,6 +64,8 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
   String _eta = 'Calculating...';
   double _progress = 0.0;
   Map<String, dynamic>? _routeInfo;
+  String _driverName = 'Loading...';
+  bool _isScanning = false;
 
   // Local distance calculation method
   double _calculateDistance(LatLng point1, LatLng point2) {
@@ -161,16 +163,57 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
     final remainingDistance = (_routeInfo!['distanceValue'] as double) * (1 - _progress);
     final averageSpeed = 50.0; // km/h
     final remainingHours = remainingDistance / averageSpeed;
-    final now = DateTime.now();
-    final etaTime = now.add(Duration(
-    hours: remainingHours.toInt(), 
-    minutes: ((remainingHours % 1) * 60).toInt()
-  ));
-  
     
+    // Use Philippines timezone
+    final now = DateTime.now().toUtc().add(const Duration(hours: 8)); // UTC+8 for Philippines
+    final etaTime = now.add(Duration(
+      hours: remainingHours.toInt(), 
+      minutes: ((remainingHours % 1) * 60).toInt()
+    ));
+  
+    // Format with Philippines timezone
+    final phTimeFormat = DateFormat('hh:mm a');
     setState(() {
-      _eta = DateFormat('hh:mm a').format(etaTime);
+      _eta = phTimeFormat.format(etaTime);
     });
+  }
+
+  Future<void> _loadDriverName() async {
+    try {
+      final courierId = _deliveryData?['courier_id'];
+      if (courierId != null && courierId is String) {
+        DocumentSnapshot courierDoc = await _firestore
+            .collection('Couriers')
+            .doc(courierId)
+            .get();
+        
+        if (courierDoc.exists) {
+          final courierData = courierDoc.data() as Map<String, dynamic>;
+          final firstName = courierData['first_name'] ?? '';
+          final lastName = courierData['last_name'] ?? '';
+          
+          setState(() {
+            _driverName = '$firstName $lastName'.trim();
+            if (_driverName.isEmpty) {
+              _driverName = 'Assigned Driver';
+            }
+          });
+        } else {
+          setState(() {
+            _driverName = 'Assigned Driver';
+          });
+        }
+      } else {
+        setState(() {
+          _driverName = 'Assigned Driver';
+        });
+      }
+    } catch (e) {
+      print('Error loading driver name: $e');
+      setState(() {
+        _driverName = 'Assigned Driver';
+      });
+    }
   }
 
   Future<void> _loadCargoAndDeliveryData() async {
@@ -188,9 +231,13 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
           
           if (deliveryQuery.docs.isNotEmpty) {
             _deliveryData = deliveryQuery.docs.first.data() as Map<String, dynamic>;
+            await _loadDriverName();
           } else {
             // No delivery record exists yet
             _deliveryData = {'status': 'pending'};
+            setState(() {
+              _driverName = 'Not Assigned';
+            });
           }
         }
 
@@ -222,9 +269,13 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
         
         if (deliveryQuery.docs.isNotEmpty) {
           _deliveryData = deliveryQuery.docs.first.data() as Map<String, dynamic>;
+          await _loadDriverName();
         } else {
           // No delivery record exists yet
           _deliveryData = {'status': 'pending'};
+          setState(() {
+            _driverName = 'Not Assigned';
+          });
         }
 
         await _generateRealisticDeliveryRoute();
@@ -238,6 +289,7 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
       print('Error loading cargo and delivery data: $e');
       setState(() {
         _isLoading = false;
+        _driverName = 'Assigned Driver';
       });
     }
   }
@@ -690,6 +742,364 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
     );
   }
 
+  void _showQRScanner() {
+    setState(() {
+      _isScanning = true;
+    });
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => _buildQRScannerModal(),
+    );
+  }
+
+  Widget _buildQRScannerModal() {
+    MobileScannerController cameraController = MobileScannerController(
+      torchEnabled: false,
+    );
+    bool isProcessing = false;
+
+    return Container(
+      height: MediaQuery.of(context).size.height * 0.8,
+      decoration: const BoxDecoration(
+        color: Colors.black,
+        borderRadius: BorderRadius.only(
+          topLeft: Radius.circular(20),
+          topRight: Radius.circular(20),
+        ),
+      ),
+      child: Stack(
+        children: [
+          // Camera preview
+          MobileScanner(
+            controller: cameraController,
+            onDetect: (capture) {
+              if (isProcessing) return;
+              
+              final List<Barcode> barcodes = capture.barcodes;
+              if (barcodes.isNotEmpty) {
+                final String scannedData = barcodes.first.rawValue ?? '';
+                _processScannedQR(scannedData, cameraController);
+                isProcessing = true;
+              }
+            },
+          ),
+
+          // Scanner overlay
+          _buildScannerOverlay(),
+
+          // Top buttons
+          Positioned(
+            top: MediaQuery.of(context).padding.top + 16,
+            left: 16,
+            right: 16,
+            child: Row(
+              children: [
+                GestureDetector(
+                  onTap: () {
+                    cameraController.dispose();
+                    Navigator.pop(context);
+                    setState(() {
+                      _isScanning = false;
+                    });
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withOpacity(0.5),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.arrow_back_rounded,
+                      color: Colors.white,
+                      size: 24,
+                    ),
+                  ),
+                ),
+                const Spacer(),
+                GestureDetector(
+                  onTap: () {
+                    cameraController.toggleTorch();
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withOpacity(0.5),
+                      shape: BoxShape.circle,
+                    ),
+                    child: ValueListenableBuilder(
+                      valueListenable: cameraController.torchState,
+                      builder: (context, state, child) {
+                        return Icon(
+                          state == TorchState.on 
+                              ? Icons.flash_on_rounded 
+                              : Icons.flash_off_rounded,
+                          color: Colors.white,
+                          size: 24,
+                        );
+                      },
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          // Bottom info
+          Positioned(
+            bottom: 24,
+            left: 24,
+            right: 24,
+            child: Column(
+              children: [
+                Text(
+                  'Scan Container QR Code\n${_containerNo}',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                ElevatedButton(
+                  onPressed: () {
+                    cameraController.dispose();
+                    Navigator.pop(context);
+                    setState(() {
+                      _isScanning = false;
+                    });
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF6B7280),
+                    foregroundColor: Colors.white,
+                    minimumSize: const Size(double.infinity, 48),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  child: const Text('Cancel Scan'),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildScannerOverlay() {
+    return Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [
+            Colors.black.withOpacity(0.7),
+            Colors.transparent,
+            Colors.transparent,
+            Colors.black.withOpacity(0.7),
+          ],
+          stops: const [0.0, 0.3, 0.7, 1.0],
+        ),
+      ),
+      child: Column(
+        children: [
+          const Expanded(flex: 2, child: SizedBox()),
+          Expanded(
+            flex: 3,
+            child: Row(
+              children: [
+                const Expanded(flex: 1, child: SizedBox()),
+                Expanded(
+                  flex: 8,
+                  child: Container(
+                    decoration: BoxDecoration(
+                      border: Border.all(
+                        color: Colors.white,
+                        width: 2,
+                      ),
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: Column(
+                      children: [
+                        const Expanded(flex: 1, child: SizedBox()),
+                        Container(
+                          height: 2,
+                          color: Colors.white,
+                        ),
+                        const Expanded(flex: 1, child: SizedBox()),
+                      ],
+                    ),
+                  ),
+                ),
+                const Expanded(flex: 1, child: SizedBox()),
+              ],
+            ),
+          ),
+          const Expanded(flex: 2, child: SizedBox()),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _processScannedQR(String scannedData, MobileScannerController controller) async {
+    // Stop camera
+    controller.stop();
+
+    // Close scanner modal
+    Navigator.pop(context);
+    setState(() {
+      _isScanning = false;
+    });
+
+    // Validate scanned QR data
+    if (scannedData.contains(_containerNo) || scannedData.contains(_cargoId)) {
+      _showScanSuccessModal(scannedData);
+    } else {
+      _showErrorModal('Invalid QR Code. Please scan the correct container QR code.');
+    }
+  }
+
+  void _showScanSuccessModal(String scannedData) {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return Dialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          child: Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Colors.white, Color(0xFFFAFBFF)],
+              ),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF10B981).withOpacity(0.1),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.qr_code_scanner_rounded,
+                    color: Color(0xFF10B981),
+                    size: 40,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  "Scan Successful!",
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF1E293B),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF8FAFC),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFFE2E8F0)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(
+                            Icons.local_shipping_rounded,
+                            color: Color(0xFF64748B),
+                            size: 16,
+                          ),
+                          const SizedBox(width: 8),
+                          const Text(
+                            "Container:",
+                            style: TextStyle(
+                              fontSize: 14,
+                              color: Color(0xFF64748B),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        _containerNo,
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF1E293B),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          const Icon(
+                            Icons.qr_code_rounded,
+                            color: Color(0xFF64748B),
+                            size: 16,
+                          ),
+                          const SizedBox(width: 8),
+                          const Text(
+                            "Scanned Data:",
+                            style: TextStyle(
+                              fontSize: 14,
+                              color: Color(0xFF64748B),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        scannedData,
+                        style: const TextStyle(
+                          fontSize: 14,
+                          color: Color(0xFF1E293B),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  'Scan verified successfully!',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: Color(0xFF64748B),
+                  ),
+                ),
+                const SizedBox(height: 24),
+                ElevatedButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF3B82F6),
+                    foregroundColor: Colors.white,
+                    minimumSize: const Size(120, 48),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  child: const Text('OK'),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
@@ -847,7 +1257,7 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
                       _buildDetailRow(Icons.access_time_rounded, widget.time, _containerNo),
                       _buildDetailRow(Icons.place_rounded, _pickup, ""),
                       _buildDetailRow(Icons.flag_rounded, _destination, ""),
-                      _buildDetailRow(Icons.person_rounded, "Driver Assigned: ${_deliveryData?['courier_id'] ?? 'Assigned Driver'}", ""),
+                      _buildDetailRow(Icons.person_rounded, "Driver Assigned: $_driverName", ""),
                       const SizedBox(height: 12),
                       Container(
                         padding: const EdgeInsets.all(12),
@@ -1082,22 +1492,13 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
                         ),
                       ),
                       Text(
-                        '${_routeInfo!['distance']} km • ${_routeInfo!['duration']} min',
+                        '${_routeInfo!['distanceValue'] != null ? (_routeInfo!['distanceValue'] as double).toStringAsFixed(1) : '0.0'} km',
                         style: const TextStyle(
                           fontSize: 12,
                           color: Color(0xFF64748B),
                         ),
                       ),
                     ],
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    'Courier positioned 1km from pickup',
-                    style: TextStyle(
-                      fontSize: 10,
-                      color: const Color(0xFF64748B).withOpacity(0.7),
-                      fontStyle: FontStyle.italic,
-                    ),
                   ),
                 ],
               ),
@@ -1128,7 +1529,7 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
           ),
           padding: EdgeInsets.symmetric(vertical: isTablet ? 16 : 12),
         ),
-        onPressed: isDelivered ? null : () => _showQRScanner(context),
+        onPressed: isDelivered ? null : _showQRScanner,
         icon: Icon(Icons.qr_code_scanner_rounded, 
             size: 20, 
             color: isDelivered ? const Color(0xFF94A3B8) : const Color(0xFF3B82F6)),
@@ -1246,157 +1647,6 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
       'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'
     ];
     return '${weekdays[date.weekday - 1]} ${months[date.month - 1]} ${date.day}, ${date.year}';
-  }
-
-  void _showQRScanner(BuildContext context) {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => QRScannerPage(
-          containerNo: _containerNo,
-          onScanComplete: (String scannedData) {
-            _handleScanResult(context, scannedData);
-          },
-        ),
-      ),
-    );
-  }
-
-  void _handleScanResult(BuildContext context, String scannedData) {
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return Dialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-          child: Container(
-            padding: const EdgeInsets.all(24),
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [Colors.white, Color(0xFFFAFBFF)],
-              ),
-              borderRadius: BorderRadius.circular(20),
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF10B981).withOpacity(0.1),
-                    shape: BoxShape.circle,
-                  ),
-                  child: const Icon(
-                    Icons.qr_code_scanner_rounded,
-                    color: Color(0xFF10B981),
-                    size: 40,
-                  ),
-                ),
-                const SizedBox(height: 16),
-                const Text(
-                  "Scan Successful!",
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.w700,
-                    color: Color(0xFF1E293B),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFF8FAFC),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: const Color(0xFFE2E8F0)),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          const Icon(
-                            Icons.local_shipping_rounded,
-                            color: Color(0xFF64748B),
-                            size: 16,
-                          ),
-                          const SizedBox(width: 8),
-                          const Text(
-                            "Container:",
-                            style: TextStyle(
-                              fontSize: 14,
-                              color: Color(0xFF64748B),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        _containerNo,
-                        style: const TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                          color: Color(0xFF1E293B),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      Row(
-                        children: [
-                          const Icon(
-                            Icons.qr_code_rounded,
-                            color: Color(0xFF64748B),
-                            size: 16,
-                          ),
-                          const SizedBox(width: 8),
-                          const Text(
-                            "Scanned Data:",
-                            style: TextStyle(
-                              fontSize: 14,
-                              color: Color(0xFF64748B),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        scannedData,
-                        style: const TextStyle(
-                          fontSize: 14,
-                          color: Color(0xFF1E293B),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 16),
-                const Text(
-                  'Scan verified successfully!',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 14,
-                    color: Color(0xFF64748B),
-                  ),
-                ),
-                const SizedBox(height: 24),
-                ElevatedButton(
-                  onPressed: () => Navigator.of(context).pop(),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF3B82F6),
-                    foregroundColor: Colors.white,
-                    minimumSize: const Size(120, 48),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                  child: const Text('OK'),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
   }
 
   void _showReportDelayModal(BuildContext context) {
@@ -1637,32 +1887,12 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
       initialDate: DateTime.now().add(const Duration(hours: 1)),
       firstDate: DateTime.now(),
       lastDate: DateTime(2100),
-      builder: (context, child) {
-        return Theme(
-          data: ThemeData.light().copyWith(
-            colorScheme: const ColorScheme.light(
-              primary: Color(0xFF3B82F6),
-            ),
-          ),
-          child: child!,
-        );
-      },
     );
 
     if (pickedDate != null) {
       final TimeOfDay? pickedTime = await showTimePicker(
         context: context,
         initialTime: TimeOfDay.fromDateTime(DateTime.now().add(const Duration(hours: 1))),
-        builder: (context, child) {
-          return Theme(
-            data: ThemeData.light().copyWith(
-              colorScheme: const ColorScheme.light(
-                primary: Color(0xFF3B82F6),
-              ),
-            ),
-            child: child!,
-          );
-        },
       );
 
       if (pickedTime != null) {
@@ -1998,133 +2228,5 @@ class RealtimeLocationMap extends StatelessWidget {
       total += calculateDistance(deliveryRoute[i], deliveryRoute[i + 1]);
     }
     return total;
-  }
-}
-
-class QRScannerPage extends StatefulWidget {
-  final String containerNo;
-  final Function(String) onScanComplete;
-
-  const QRScannerPage({
-    super.key,
-    required this.containerNo,
-    required this.onScanComplete,
-  });
-
-  @override
-  State<QRScannerPage> createState() => _QRScannerPageState();
-}
-
-class _QRScannerPageState extends State<QRScannerPage> {
-  MobileScannerController cameraController = MobileScannerController();
-  bool isScanned = false;
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Scan QR Code'),
-        backgroundColor: const Color(0xFF3B82F6),
-        foregroundColor: Colors.white,
-        actions: [
-          IconButton(
-            icon: ValueListenableBuilder(
-              valueListenable: cameraController.torchState,
-              builder: (context, state, child) {
-                switch (state) {
-                  case TorchState.off:
-                    return const Icon(Icons.flash_off_rounded, color: Colors.grey);
-                  case TorchState.on:
-                    return const Icon(Icons.flash_on_rounded, color: Colors.yellow);
-                }
-              },
-            ),
-            onPressed: () => cameraController.toggleTorch(),
-          ),
-        ],
-      ),
-      body: Column(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(16),
-            color: const Color(0xFF3B82F6),
-            child: Column(
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    const Icon(
-                      Icons.qr_code_scanner_rounded,
-                      color: Colors.white,
-                      size: 20,
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      'Container: ${widget.containerNo}',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                const Text(
-                  'Position the QR code or barcode within the frame',
-                  style: TextStyle(
-                    color: Colors.white70,
-                    fontSize: 14,
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-              ],
-            ),
-          ),
-          Expanded(
-            child: MobileScanner(
-              controller: cameraController,
-              onDetect: (capture) {
-                if (!isScanned) {
-                  final List<Barcode> barcodes = capture.barcodes;
-                  for (final barcode in barcodes) {
-                    if (barcode.rawValue != null) {
-                      setState(() {
-                        isScanned = true;
-                      });
-                      widget.onScanComplete(barcode.rawValue!);
-                      Navigator.pop(context);
-                      break;
-                    }
-                  }
-                }
-              },
-            ),
-          ),
-          Container(
-            padding: const EdgeInsets.all(16),
-            child: ElevatedButton.icon(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF6B7280),
-                foregroundColor: Colors.white,
-                minimumSize: const Size(double.infinity, 48),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-              ),
-              onPressed: () => Navigator.pop(context),
-              icon: const Icon(Icons.cancel_rounded),
-              label: const Text('Cancel Scan'),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  @override
-  void dispose() {
-    cameraController.dispose();
-    super.dispose();
   }
 }

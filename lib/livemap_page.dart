@@ -54,183 +54,188 @@ class _LiveMapPageState extends State<LiveMapPage> {
   }
 
   Future<void> _loadAvailableAndAcceptedCargos() async {
-    setState(() {
-      _isLoadingCargo = true;
-      _isLoadingRoutes = true;
-    });
+  setState(() {
+    _isLoadingCargo = true;
+    _isLoadingRoutes = true;
+  });
 
-    try {
-      final user = _auth.currentUser;
-      if (user == null) return;
+  try {
+    final user = _auth.currentUser;
+    if (user == null) return;
 
-      // Load ALL cargos (no status filter)
-      QuerySnapshot cargoSnapshot = await _firestore
-          .collection('Cargo')
-          .get();
+    // Load ALL cargos (no status filter)
+    QuerySnapshot cargoSnapshot = await _firestore
+        .collection('Cargo')
+        .get();
 
-      QuerySnapshot deliverySnapshot = await _firestore
-          .collection('CargoDelivery')
-          .get();
+    QuerySnapshot deliverySnapshot = await _firestore
+        .collection('CargoDelivery')
+        .get();
 
-      Set<String> assignedCargoIds = {};
-      Map<String, String> cargoDeliveryStatus = {};
+    Set<String> assignedCargoIds = {};
+    Map<String, String> cargoDeliveryStatus = {};
+    Map<String, String> cargoDeliveryIds = {}; // Store delivery IDs
+    
+    for (var doc in deliverySnapshot.docs) {
+      var deliveryData = doc.data() as Map<String, dynamic>;
       
-      for (var doc in deliverySnapshot.docs) {
-        var deliveryData = doc.data() as Map<String, dynamic>;
-        
-        // FIXED: Handle both String and int types for cargo_id
-        final cargoId = _getCargoId(deliveryData['cargo_id']);
-        if (cargoId.isNotEmpty) {
-          assignedCargoIds.add(cargoId);
-          // Store the status from CargoDelivery
-          cargoDeliveryStatus[cargoId] = 
-              deliveryData['status']?.toString() ?? 'unknown';
-        }
+      // FIXED: Handle both String and int types for cargo_id
+      final cargoId = _getCargoId(deliveryData['cargo_id']);
+      if (cargoId.isNotEmpty) {
+        assignedCargoIds.add(cargoId);
+        // Store the status from CargoDelivery
+        cargoDeliveryStatus[cargoId] = 
+            deliveryData['status']?.toString() ?? 'pending';
+        // Store delivery ID for reference
+        cargoDeliveryIds[cargoId] = doc.id;
       }
+    }
 
-      List<Map<String, dynamic>> availableCargos = [];
+    List<Map<String, dynamic>> availableCargos = [];
+    
+    for (var doc in cargoSnapshot.docs) {
+      var cargoData = doc.data() as Map<String, dynamic>;
+      String cargoId = doc.id;
       
-      for (var doc in cargoSnapshot.docs) {
-        var cargoData = doc.data() as Map<String, dynamic>;
-        String cargoId = doc.id;
-        String status = 'pending';
-        
-        // Check if cargo has a delivery status
-        if (cargoDeliveryStatus.containsKey(cargoId)) {
-          status = cargoDeliveryStatus[cargoId]!;
-        }
-        
-        // Show all cargos (available, assigned, and cancelled)
-        // Get coordinates for the DESTINATION of all cargos
-        final destCoords = await _getCoordinatesForAddress(cargoData['destination'] ?? 'Manila');
-        
-        Map<String, dynamic> cargo = {
+      // Determine status: if cargo has a delivery record, use that status, otherwise it's available
+      String status = 'available'; // Default status for available cargos
+      if (cargoDeliveryStatus.containsKey(cargoId)) {
+        status = cargoDeliveryStatus[cargoId]!;
+      }
+      
+      // Get coordinates for the DESTINATION of all cargos
+      final destCoords = await _getCoordinatesForAddress(cargoData['destination'] ?? 'Manila');
+      
+      Map<String, dynamic> cargo = {
+        'cargo_id': cargoId,
+        'containerNo': 'CONT-${cargoData['item_number'] ?? 'N/A'}',
+        'destination': cargoData['destination'] ?? 'Unknown',
+        'origin': cargoData['origin'] ?? 'Unknown',
+        'description': cargoData['description'] ?? 'N/A',
+        'weight': cargoData['weight'] ?? 0.0,
+        'value': cargoData['value'] ?? 0.0,
+        'status': status, // Use status from CargoDelivery or 'available'
+        'item_number': cargoData['item_number'],
+        'hs_code': cargoData['hs_code'],
+        'quantity': cargoData['quantity'],
+        'destination_coords': destCoords, // Store DESTINATION coordinates for mapping
+        // Add delivery_id if this cargo has been accepted
+        if (cargoDeliveryIds.containsKey(cargoId))
+          'delivery_id': cargoDeliveryIds[cargoId],
+        ...cargoData,
+      };
+      availableCargos.add(cargo);
+    }
+
+    // Load accepted deliveries (only active ones for routes)
+    QuerySnapshot acceptedSnapshot = await _firestore
+        .collection('CargoDelivery')
+        .where('courier_id', isEqualTo: user.uid)
+        .get();
+
+    List<Map<String, dynamic>> acceptedDeliveries = [];
+    List<DeliveryRouteData> routes = [];
+    
+    for (var doc in acceptedSnapshot.docs) {
+      var deliveryData = doc.data() as Map<String, dynamic>;
+      String status = deliveryData['status']?.toString() ?? 'pending';
+      
+      // Skip cancelled deliveries for routes (they'll still show as cargo markers)
+      if (status == 'cancelled') continue;
+      
+      // FIXED: Handle both String and int types for cargo_id
+      final cargoId = _getCargoId(deliveryData['cargo_id']);
+      if (cargoId.isEmpty) continue;
+      
+      DocumentSnapshot cargoDoc = await _firestore
+          .collection('Cargo')
+          .doc(cargoId)
+          .get();
+      
+      if (cargoDoc.exists) {
+        var cargoData = cargoDoc.data() as Map<String, dynamic>;
+        Map<String, dynamic> delivery = {
+          'delivery_id': doc.id,
           'cargo_id': cargoId,
           'containerNo': 'CONT-${cargoData['item_number'] ?? 'N/A'}',
           'destination': cargoData['destination'] ?? 'Unknown',
           'origin': cargoData['origin'] ?? 'Unknown',
+          'status': status,
           'description': cargoData['description'] ?? 'N/A',
           'weight': cargoData['weight'] ?? 0.0,
           'value': cargoData['value'] ?? 0.0,
-          'status': status, // Use actual status (pending, in_progress, delivered, cancelled)
           'item_number': cargoData['item_number'],
           'hs_code': cargoData['hs_code'],
           'quantity': cargoData['quantity'],
-          'destination_coords': destCoords, // Store DESTINATION coordinates for mapping
           ...cargoData,
         };
-        availableCargos.add(cargo);
-      }
-
-      // Load accepted deliveries (only active ones for routes)
-      QuerySnapshot acceptedSnapshot = await _firestore
-          .collection('CargoDelivery')
-          .where('courier_id', isEqualTo: user.uid)
-          .get();
-
-      List<Map<String, dynamic>> acceptedDeliveries = [];
-      List<DeliveryRouteData> routes = [];
-      
-      for (var doc in acceptedSnapshot.docs) {
-        var deliveryData = doc.data() as Map<String, dynamic>;
-        String status = deliveryData['status']?.toString() ?? 'pending';
+        acceptedDeliveries.add(delivery);
         
-        // Skip cancelled deliveries for routes (they'll still show as cargo markers)
-        if (status == 'cancelled') continue;
-        
-        // FIXED: Handle both String and int types for cargo_id
-        final cargoId = _getCargoId(deliveryData['cargo_id']);
-        if (cargoId.isEmpty) continue;
-        
-        DocumentSnapshot cargoDoc = await _firestore
-            .collection('Cargo')
-            .doc(cargoId)
-            .get();
-        
-        if (cargoDoc.exists) {
-          var cargoData = cargoDoc.data() as Map<String, dynamic>;
-          Map<String, dynamic> delivery = {
-            'delivery_id': doc.id,
-            'cargo_id': cargoId,
-            'containerNo': 'CONT-${cargoData['item_number'] ?? 'N/A'}',
-            'destination': cargoData['destination'] ?? 'Unknown',
-            'origin': cargoData['origin'] ?? 'Unknown',
-            'status': status,
-            'description': cargoData['description'] ?? 'N/A',
-            'weight': cargoData['weight'] ?? 0.0,
-            'value': cargoData['value'] ?? 0.0,
-            'item_number': cargoData['item_number'],
-            'hs_code': cargoData['hs_code'],
-            'quantity': cargoData['quantity'],
-            ...cargoData,
-          };
-          acceptedDeliveries.add(delivery);
-          
-          // Get coordinates using enhanced geocoding with validation
-          final originCoords = OSMService.validateAndCorrectCoordinates(
-            await _getCoordinatesForAddress(delivery['origin']), 
-            const LatLng(14.5995, 120.9842) // Manila as fallback
-          );
-          final destCoords = OSMService.validateAndCorrectCoordinates(
-            await _getCoordinatesForAddress(delivery['destination']),
-            const LatLng(14.5995, 120.9842) // Manila as fallback
-          );
+        // Get coordinates using enhanced geocoding with validation
+        final originCoords = OSMService.validateAndCorrectCoordinates(
+          await _getCoordinatesForAddress(delivery['origin']), 
+          const LatLng(14.5995, 120.9842) // Manila as fallback
+        );
+        final destCoords = OSMService.validateAndCorrectCoordinates(
+          await _getCoordinatesForAddress(delivery['destination']),
+          const LatLng(14.5995, 120.9842) // Manila as fallback
+        );
 
-          // Get accurate route data with endpoint correction
-          var routeInfo = await OSMService.getRouteWithGeometry(originCoords, destCoords);
+        // Get accurate route data with endpoint correction
+        var routeInfo = await OSMService.getRouteWithGeometry(originCoords, destCoords);
 
-          // If route doesn't seem accurate, try alternative routing
-          if (!routeInfo['routeFound'] || routeInfo['routeAccuracy'] == 'low') {
-            final alternativeRoute = await OSMService.getAlternativeRoute(originCoords, destCoords);
-            if (alternativeRoute['routeFound']) {
-              routeInfo = alternativeRoute;
-            }
-          }
-          
-          routes.add(DeliveryRouteData(
-            origin: originCoords,
-            destination: destCoords,
-            delivery: delivery,
-            routePoints: routeInfo['routePoints'] ?? [],
-            distance: routeInfo['distance'],
-            duration: routeInfo['duration'],
-            trafficStatus: routeInfo['trafficStatus'],
-            isInternational: routeInfo['isInternational'] ?? false,
-            routeFound: routeInfo['routeFound'] ?? false,
-            routeAccuracy: routeInfo['routeAccuracy'] ?? 'low',
-          ));
-
-          // Calculate courier position 1km from pickup along the route
-          if (routeInfo['routePoints'] != null && routeInfo['routePoints'].isNotEmpty) {
-            final courierPosition = _calculateCourierPositionAlongRoute(
-              routeInfo['routePoints'] as List<LatLng>,
-              1.0 // 1km from pickup
-            );
-            _courierRoutePositions[cargoId] = courierPosition;
+        // If route doesn't seem accurate, try alternative routing
+        if (!routeInfo['routeFound'] || routeInfo['routeAccuracy'] == 'low') {
+          final alternativeRoute = await OSMService.getAlternativeRoute(originCoords, destCoords);
+          if (alternativeRoute['routeFound']) {
+            routeInfo = alternativeRoute;
           }
         }
-      }
+        
+        routes.add(DeliveryRouteData(
+          origin: originCoords,
+          destination: destCoords,
+          delivery: delivery,
+          routePoints: routeInfo['routePoints'] ?? [],
+          distance: routeInfo['distance'],
+          duration: routeInfo['duration'],
+          trafficStatus: routeInfo['trafficStatus'],
+          isInternational: routeInfo['isInternational'] ?? false,
+          routeFound: routeInfo['routeFound'] ?? false,
+          routeAccuracy: routeInfo['routeAccuracy'] ?? 'low',
+        ));
 
-      setState(() {
-        _availableCargos = availableCargos;
-        _acceptedDeliveries = acceptedDeliveries;
-        _deliveryRoutes = routes;
-        _isLoadingCargo = false;
-        _isLoadingRoutes = false;
-      });
-
-      // Auto-zoom to show all routes if there are deliveries
-      if (routes.isNotEmpty) {
-        _zoomToFitRoutes();
+        // Calculate courier position 1km from pickup along the route
+        if (routeInfo['routePoints'] != null && routeInfo['routePoints'].isNotEmpty) {
+          final courierPosition = _calculateCourierPositionAlongRoute(
+            routeInfo['routePoints'] as List<LatLng>,
+            1.0 // 1km from pickup
+          );
+          _courierRoutePositions[cargoId] = courierPosition;
+        }
       }
-    } catch (e) {
-      print('[v0] Error loading cargos: $e');
-      setState(() {
-        _isLoadingCargo = false;
-        _isLoadingRoutes = false;
-      });
     }
+
+    setState(() {
+      _availableCargos = availableCargos;
+      _acceptedDeliveries = acceptedDeliveries;
+      _deliveryRoutes = routes;
+      _isLoadingCargo = false;
+      _isLoadingRoutes = false;
+    });
+
+    // Auto-zoom to show all routes if there are deliveries
+    if (routes.isNotEmpty) {
+      _zoomToFitRoutes();
+    }
+  } catch (e) {
+    print('[v0] Error loading cargos: $e');
+    setState(() {
+      _isLoadingCargo = false;
+      _isLoadingRoutes = false;
+    });
   }
+}
 
   // FIXED: Helper method to handle both String and int cargo_id types
   String _getCargoId(dynamic cargoIdValue) {
@@ -616,7 +621,7 @@ class _LiveMapPageState extends State<LiveMapPage> {
           ),
           LegendItem(
             color: const Color(0xFF8B5CF6),
-            label: 'Cargo Destination',
+            label: 'Available Cargo',
             icon: Icons.inventory_2,
           ),
           LegendItem(

@@ -12,6 +12,7 @@ import 'live_location_page.dart';
 import 'analytics_page.dart';
 import 'order_history_page.dart';
 import 'status_update_page.dart'; 
+
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
 
@@ -31,16 +32,6 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
   bool _hasUnreadNotifications = false;
   StreamSubscription? _notificationSubscription;
 
-  // Image slider - Updated to use local assets
-  final PageController _pageController = PageController();
-  final List<String> _sliderImages = [
-    'assets/images/image1.png',
-    'assets/images/image2.png',
-    'assets/images/image3.png',
-  ];
-  int _currentPage = 0;
-  Timer? _autoSlideTimer;
-
   // Cargo Lists
   List<Map<String, dynamic>> _availableCargos = [];
   List<Map<String, dynamic>> _inProgressDeliveries = [];
@@ -54,7 +45,6 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
       setupCargoListener(_loadAvailableCargos);
       setupDeliveryListener(_currentUser!.uid, _loadInProgressDeliveries);
       _setupNotificationListener();
-      _startAutoSlide();
     } else {
       _isLoading = false;
       _errorMessage = "User not authenticated";
@@ -63,8 +53,6 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
 
   @override
   void dispose() {
-    _pageController.dispose();
-    _autoSlideTimer?.cancel();
     _notificationSubscription?.cancel();
     super.dispose();
   }
@@ -86,25 +74,16 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
     });
   }
 
-  void _startAutoSlide() {
-    _autoSlideTimer?.cancel();
-    _autoSlideTimer = Timer.periodic(const Duration(seconds: 5), (Timer timer) {
-      if (_pageController.hasClients) {
-        if (_currentPage < _sliderImages.length - 1) {
-          _currentPage++;
-        } else {
-          _currentPage = 0;
-        }
-        _pageController.animateToPage(
-          _currentPage,
-          duration: const Duration(milliseconds: 500),
-          curve: Curves.easeInOut,
-        );
-      }
-    });
-  }
-
   Future<void> _loadData() async {
+    if (_currentUser == null) {
+      print('User not authenticated');
+      setState(() {
+        _isLoading = false;
+        _errorMessage = "User not authenticated";
+      });
+      return;
+    }
+    
     try {
       await Future.wait([
         _loadUserData(),
@@ -136,8 +115,9 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
         .get();
 
     Set<String> assignedCargoIds = {};
-    Map<String, String> cargoDeliveryStatus = {}; // Map to store cargo_id -> status
+    Map<String, String> cargoDeliveryStatus = {};
     
+    // Get all cargo IDs that have delivery records
     for (var doc in deliverySnapshot.docs) {
       var deliveryData = doc.data() as Map<String, dynamic>;
       if (deliveryData['cargo_id'] != null) {
@@ -148,21 +128,26 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
     }
 
     List<Map<String, dynamic>> availableCargos = [];
+    
     for (var doc in cargoSnapshot.docs) {
       var cargoData = doc.data() as Map<String, dynamic>;
       String cargoId = doc.id;
 
-      // Check if cargo has a delivery record and its status
+      // Check if cargo has a delivery record
+      bool hasDeliveryRecord = assignedCargoIds.contains(cargoId);
       String deliveryStatus = cargoDeliveryStatus[cargoId] ?? '';
       
-      // Only include cargos that are:
-      // 1. Not assigned to any delivery OR have cancelled status
-      // 2. Not already in progress/completed
-      if (!assignedCargoIds.contains(cargoId) || deliveryStatus == 'cancelled') {
+      // Include cargo if:
+      // 1. It has NO delivery record OR
+      // 2. It has delivery record but status is 'cancelled'
+      if (!hasDeliveryRecord || deliveryStatus == 'cancelled') {
+        // Generate sequential container number based on cargo ID
+        String containerNo = _generateContainerNumber(cargoId);
+        
         Map<String, dynamic> combinedData = {
           'cargo_id': cargoId,
-          'containerNo': 'CONT-${cargoData['item_number']?.toString() ?? 'N/A'}',
-          'status': deliveryStatus.isNotEmpty ? deliveryStatus : 'pending', // Use delivery status or default to pending
+          'containerNo': containerNo,
+          'status': deliveryStatus.isNotEmpty ? deliveryStatus : 'pending',
           'pickupLocation': cargoData['origin']?.toString() ?? 'Port Terminal',
           'destination': cargoData['destination']?.toString() ?? 'Delivery Point',
           'created_at': cargoData['created_at'],
@@ -175,20 +160,70 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
           'additional_info': cargoData['additional_info']?.toString() ?? '',
           'submanifest_id': cargoData['submanifest_id']?.toString() ?? '',
           'is_cancelled': deliveryStatus == 'cancelled',
+          'sequence_number': _extractSequenceNumber(cargoId), // For sorting
         };
         availableCargos.add(combinedData);
+        
+        print('Added cargo: $cargoId, Container: $containerNo, status: $deliveryStatus, hasDelivery: $hasDeliveryRecord');
+      } else {
+        print('Skipped cargo: $cargoId, status: $deliveryStatus');
       }
     }
+
+    // Sort available cargos by sequence number (cargo ID)
+    availableCargos.sort((a, b) {
+      int seqA = a['sequence_number'] ?? 0;
+      int seqB = b['sequence_number'] ?? 0;
+      return seqA.compareTo(seqB);
+    });
 
     setState(() {
       _availableCargos = availableCargos;
     });
     
     print('Found ${_availableCargos.length} available cargos');
+    
+    // Debug: Print all available cargos in sequence
+    for (var cargo in _availableCargos) {
+      print('Available Cargo: ${cargo['containerNo']} - ${cargo['status']} - Sequence: ${cargo['sequence_number']}');
+    }
+    
   } catch (e) {
     print('Error loading available cargos: $e');
+    setState(() {
+      _availableCargos = [];
+    });
   }
 }
+
+  // Generate container number based on cargo ID sequence
+  String _generateContainerNumber(String cargoId) {
+    int sequenceNumber = _extractSequenceNumber(cargoId);
+    return 'CONT-$sequenceNumber';
+  }
+
+  // Extract sequence number from cargo ID
+  int _extractSequenceNumber(String cargoId) {
+    try {
+      // If cargo ID is a simple number
+      if (RegExp(r'^\d+$').hasMatch(cargoId)) {
+        return int.parse(cargoId);
+      }
+      
+      // If cargo ID has prefix like "cargo_123"
+      RegExp regex = RegExp(r'(\d+)$');
+      Match? match = regex.firstMatch(cargoId);
+      if (match != null) {
+        return int.parse(match.group(1)!);
+      }
+      
+      // If no numbers found, use hash code (fallback)
+      return cargoId.hashCode.abs();
+    } catch (e) {
+      print('Error extracting sequence number from $cargoId: $e');
+      return 0;
+    }
+  }
 
   Future<void> _loadInProgressDeliveries() async {
   try {
@@ -217,10 +252,13 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
           if (cargoDoc.exists) {
             var cargoData = cargoDoc.data() as Map<String, dynamic>;
             
+            // Generate sequential container number for in-progress deliveries too
+            String containerNo = _generateContainerNumber(deliveryData['cargo_id'].toString());
+            
             Map<String, dynamic> combinedData = {
               'delivery_id': doc.id,
               'cargo_id': deliveryData['cargo_id'],
-              'containerNo': 'CONT-${cargoData['item_number'] ?? 'N/A'}',
+              'containerNo': containerNo,
               'status': deliveryData['status'] ?? 'in-progress', // Use status from CargoDelivery
               'pickupLocation': cargoData['origin'] ?? 'Port Terminal',
               'destination': cargoData['destination'] ?? 'Delivery Point',
@@ -234,6 +272,7 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
               'item_number': cargoData['item_number'] ?? 0,
               'proof_image': deliveryData['proof_image'],
               'confirmed_by': deliveryData['confirmed_by'],
+              'sequence_number': _extractSequenceNumber(deliveryData['cargo_id'].toString()),
             };
             inProgressDeliveries.add(combinedData);
           }
@@ -242,6 +281,13 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
         }
       }
     }
+
+    // Sort in-progress deliveries by sequence number
+    inProgressDeliveries.sort((a, b) {
+      int seqA = a['sequence_number'] ?? 0;
+      int seqB = b['sequence_number'] ?? 0;
+      return seqA.compareTo(seqB);
+    });
 
     setState(() {
       _inProgressDeliveries = inProgressDeliveries;
@@ -472,34 +518,108 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
       context: context,
       builder: (BuildContext context) {
         return Dialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          child: Padding(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          child: Container(
             padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Colors.white, Color(0xFFFAFBFF)],
+              ),
+              borderRadius: BorderRadius.circular(20),
+            ),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(
-                  Icons.check_circle,
-                  color: Color(0xFF10B981),
-                  size: 64,
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF10B981).withOpacity(0.1),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.check_circle_rounded,
+                    color: Color(0xFF10B981),
+                    size: 50,
+                  ),
                 ),
                 const SizedBox(height: 16),
                 Text(
                   message,
                   textAlign: TextAlign.center,
                   style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
+                    fontSize: 20,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF1E293B),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  "You can now track your delivery in real-time",
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: Color(0xFF64748B),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                // Additional Info Section
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF0F9FF),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFFE0F2FE)),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.info_outline_rounded,
+                        color: Colors.blue[600],
+                        size: 16,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          "Check the 'Track Your Deliveries' section for updates",
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.blue[600],
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
                 const SizedBox(height: 24),
                 ElevatedButton(
                   onPressed: () => Navigator.of(context).pop(),
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF3B82F6),
-                    minimumSize: const Size(120, 48),
+                    backgroundColor: const Color(0xFF10B981),
+                    foregroundColor: Colors.white,
+                    minimumSize: const Size(150, 48),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    elevation: 0,
                   ),
-                  child: const Text('OK'),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.check_rounded, size: 20),
+                      SizedBox(width: 8),
+                      Text(
+                        'Got It',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ],
             ),
@@ -514,34 +634,61 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
       context: context,
       builder: (BuildContext context) {
         return Dialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          child: Padding(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          child: Container(
             padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Colors.white, Color(0xFFFAFBFF)],
+              ),
+              borderRadius: BorderRadius.circular(20),
+            ),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(
-                  Icons.error,
-                  color: Color(0xFFEF4444),
-                  size: 64,
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFEF4444).withOpacity(0.1),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.error_outline_rounded,
+                    color: Color(0xFFEF4444),
+                    size: 50,
+                  ),
                 ),
                 const SizedBox(height: 16),
                 Text(
                   message,
                   textAlign: TextAlign.center,
                   style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF1E293B),
                   ),
                 ),
                 const SizedBox(height: 24),
                 ElevatedButton(
                   onPressed: () => Navigator.of(context).pop(),
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF3B82F6),
+                    backgroundColor: const Color(0xFFEF4444),
+                    foregroundColor: Colors.white,
                     minimumSize: const Size(120, 48),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    elevation: 0,
                   ),
-                  child: const Text('OK'),
+                  child: const Text(
+                    'OK',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
                 ),
               ],
             ),
@@ -572,8 +719,28 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
     );
   }
 
+  void _debugCargoData() {
+    print('=== DEBUG CARGO DATA ===');
+    print('Available Cargos: ${_availableCargos.length}');
+    print('In Progress Deliveries: ${_inProgressDeliveries.length}');
+    
+    for (var cargo in _availableCargos) {
+      print('Available: ${cargo['containerNo']} - Status: ${cargo['status']} - ID: ${cargo['cargo_id']} - Sequence: ${cargo['sequence_number']}');
+    }
+    
+    for (var delivery in _inProgressDeliveries) {
+      print('In Progress: ${delivery['containerNo']} - Status: ${delivery['status']} - Sequence: ${delivery['sequence_number']}');
+    }
+    print('=== END DEBUG ===');
+  }
+
   @override
   Widget build(BuildContext context) {
+    // Add this for debugging (remove after fixing)
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _debugCargoData();
+    });
+    
     if (_isLoading) {
       return const Scaffold(
         body: Center(
@@ -795,116 +962,6 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
             ),
 
             const SizedBox(height: 8),
-
-            // Image Slider with FUTURE UPDATE text inside
-            Container(
-              margin: const EdgeInsets.symmetric(horizontal: 16),
-              height: 150,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: Stack(
-                children: [
-                  PageView.builder(
-                    controller: _pageController,
-                    itemCount: _sliderImages.length,
-                    onPageChanged: (int page) {
-                      setState(() {
-                        _currentPage = page;
-                      });
-                    },
-                    itemBuilder: (context, index) {
-                      return ClipRRect(
-                        borderRadius: BorderRadius.circular(16),
-                        child: Stack(
-                          children: [
-                            Image.asset(
-                              _sliderImages[index],
-                              fit: BoxFit.cover,
-                              width: double.infinity,
-                              errorBuilder: (context, error, stackTrace) {
-                                return Container(
-                                  decoration: BoxDecoration(
-                                    color: Colors.grey[300],
-                                    borderRadius: BorderRadius.circular(16),
-                                  ),
-                                  child: const Center(
-                                    child: Icon(Icons.error, color: Colors.grey),
-                                  ),
-                                );
-                              },
-                            ),
-                            // Gradient overlay for better text visibility
-                            Container(
-                              decoration: BoxDecoration(
-                                borderRadius: BorderRadius.circular(16),
-                                gradient: LinearGradient(
-                                  begin: Alignment.topCenter,
-                                  end: Alignment.bottomCenter,
-                                  colors: [
-                                    Colors.black.withOpacity(0.3),
-                                    Colors.transparent,
-                                    Colors.transparent,
-                                    Colors.black.withOpacity(0.3),
-                                  ],
-                                ),
-                              ),
-                            ),
-                            // FUTURE UPDATE text positioned inside the slider
-                            const Positioned(
-                              top: 16,
-                              left: 0,
-                              right: 0,
-                              child: Center(
-                                child: Text(
-                                  "",
-                                  style: TextStyle(
-                                    fontSize: 20,
-                                    fontWeight: FontWeight.w800,
-                                    color: Colors.white,
-                                    letterSpacing: 1.5,
-                                    shadows: [
-                                      Shadow(
-                                        blurRadius: 10,
-                                        color: Colors.black,
-                                        offset: Offset(2, 2),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      );
-                    },
-                  ),
-                  Positioned(
-                    bottom: 10,
-                    left: 0,
-                    right: 0,
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: List.generate(_sliderImages.length, (index) {
-                        return AnimatedContainer(
-                          duration: const Duration(milliseconds: 300),
-                          margin: const EdgeInsets.symmetric(horizontal: 4),
-                          width: _currentPage == index ? 20 : 8,
-                          height: 8,
-                          decoration: BoxDecoration(
-                            shape: _currentPage == index ? BoxShape.rectangle : BoxShape.circle,
-                            borderRadius: _currentPage == index ? BorderRadius.circular(4) : null,
-                            color: _currentPage == index ? Colors.white : Colors.white.withOpacity(0.5),
-                          ),
-                        );
-                      }),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-            const SizedBox(height: 20),
 
             // All Four Sections in One Container - No background, no shadows
             Container(
