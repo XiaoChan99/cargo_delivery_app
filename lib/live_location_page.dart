@@ -8,6 +8,9 @@ import 'package:flutter_map/flutter_map.dart';
 import 'dart:async';
 import 'dart:math';
 import 'osmservice.dart';
+import 'package:image_picker/image_picker.dart';
+import 'dart:io';
+import 'package:camera/camera.dart';
 
 class LiveLocationPage extends StatefulWidget {
   final Map<String, dynamic>? cargoData;
@@ -54,6 +57,7 @@ class LiveLocationPage extends StatefulWidget {
 class _LiveLocationPageState extends State<LiveLocationPage> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseAuth _auth = FirebaseAuth.instance;
+  final ImagePicker _imagePicker = ImagePicker();
   Map<String, dynamic>? _cargoData;
   Map<String, dynamic>? _deliveryData;
   bool _isLoading = true;
@@ -65,7 +69,9 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
   double _progress = 0.0;
   Map<String, dynamic>? _routeInfo;
   String _driverName = 'Loading...';
-  bool _isScanning = false;
+  bool _isTakingPhoto = false;
+  File? _proofOfDeliveryImage;
+  bool _hasProofImage = false;
 
   // Local distance calculation method
   double _calculateDistance(LatLng point1, LatLng point2) {
@@ -91,12 +97,34 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
   void initState() {
     super.initState();
     _loadCargoAndDeliveryData();
+    _checkExistingProofImage();
   }
 
   @override
   void dispose() {
     _locationUpdateTimer?.cancel();
     super.dispose();
+  }
+
+  Future<void> _checkExistingProofImage() async {
+    try {
+      final cargoId = widget.cargoId;
+      if (cargoId.isNotEmpty) {
+        QuerySnapshot proofQuery = await _firestore
+            .collection('proof_image')
+            .where('cargo_id', isEqualTo: cargoId)
+            .limit(1)
+            .get();
+        
+        if (proofQuery.docs.isNotEmpty) {
+          setState(() {
+            _hasProofImage = true;
+          });
+        }
+      }
+    } catch (e) {
+      print('Error checking proof image: $e');
+    }
   }
 
   void _startLocationUpdates() {
@@ -472,30 +500,45 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
         return;
       }
 
-      // Update CargoDelivery status only
+      // Check if proof image exists
+      if (!_hasProofImage && _proofOfDeliveryImage == null) {
+        _showErrorModal('Proof of delivery image is required before marking as delivered');
+        return;
+      }
+
+      // Upload proof image if taken in current session
+      String? imageUrl;
+      if (_proofOfDeliveryImage != null) {
+        imageUrl = await _uploadProofImage(_proofOfDeliveryImage!);
+      }
+
+      // Update CargoDelivery status
       QuerySnapshot deliveryQuery = await _firestore
           .collection('CargoDelivery')
           .where('cargo_id', isEqualTo: _cargoId)
           .limit(1)
           .get();
 
+      final updateData = {
+        'status': 'delivered',
+        'confirmed_at': Timestamp.now(),
+        'remarks': 'Delivery completed successfully',
+        'updated_at': Timestamp.now(),
+      };
+
+      if (imageUrl != null) {
+        updateData['proof_image_url'] = imageUrl;
+      }
+
       if (deliveryQuery.docs.isNotEmpty) {
-        await deliveryQuery.docs.first.reference.update({
-          'status': 'delivered',
-          'confirmed_at': Timestamp.now(),
-          'remarks': 'Delivery completed successfully',
-          'updated_at': Timestamp.now(),
-        });
+        await deliveryQuery.docs.first.reference.update(updateData);
       } else {
         // Create new delivery record if it doesn't exist
         await _firestore.collection('CargoDelivery').add({
           'cargo_id': _cargoId,
           'courier_id': user.uid,
-          'status': 'delivered',
-          'confirmed_at': Timestamp.now(),
-          'remarks': 'Delivery completed successfully',
+          ...updateData,
           'created_at': Timestamp.now(),
-          'updated_at': Timestamp.now(),
         });
       }
 
@@ -515,6 +558,7 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
         _deliveryData?['status'] = 'delivered';
         _progress = 1.0;
         _eta = 'Arrived';
+        _hasProofImage = true;
       });
 
       _showSuccessModal('Delivery marked as completed successfully!');
@@ -526,6 +570,30 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
     } catch (e) {
       print('Error confirming delivery: $e');
       _showErrorModal('Failed to confirm delivery: $e');
+    }
+  }
+
+  Future<String> _uploadProofImage(File imageFile) async {
+    try {
+      // For now, we'll store the image URL in Firestore
+      // In a real app, you would upload to Firebase Storage and get the download URL
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final imageName = 'proof_${_cargoId}_$timestamp.jpg';
+      
+      // Store proof image record
+      await _firestore.collection('proof_image').add({
+        'cargo_id': _cargoId,
+        'image_name': imageName,
+        'uploaded_at': Timestamp.now(),
+        'uploaded_by': _auth.currentUser?.uid,
+        'container_no': _containerNo,
+      });
+
+      // Return a placeholder URL - in real implementation, this would be the actual download URL
+      return 'https://example.com/proof_images/$imageName';
+    } catch (e) {
+      print('Error uploading proof image: $e');
+      throw Exception('Failed to upload proof image');
     }
   }
 
@@ -742,228 +810,41 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
     );
   }
 
-  void _showQRScanner() {
+  void _showCameraModal() {
     setState(() {
-      _isScanning = true;
+      _isTakingPhoto = true;
     });
 
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => _buildQRScannerModal(),
-    );
-  }
-
-  Widget _buildQRScannerModal() {
-    MobileScannerController cameraController = MobileScannerController(
-      torchEnabled: false,
-    );
-    bool isProcessing = false;
-
-    return Container(
-      height: MediaQuery.of(context).size.height * 0.8,
-      decoration: const BoxDecoration(
-        color: Colors.black,
-        borderRadius: BorderRadius.only(
-          topLeft: Radius.circular(20),
-          topRight: Radius.circular(20),
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => FullScreenCamera(
+          containerNo: _containerNo,
+          onPhotoTaken: (imageFile) {
+            _handlePhotoTaken(imageFile);
+          },
+          onCancel: () {
+            Navigator.pop(context);
+            setState(() {
+              _isTakingPhoto = false;
+            });
+          },
         ),
       ),
-      child: Stack(
-        children: [
-          // Camera preview
-          MobileScanner(
-            controller: cameraController,
-            onDetect: (capture) {
-              if (isProcessing) return;
-              
-              final List<Barcode> barcodes = capture.barcodes;
-              if (barcodes.isNotEmpty) {
-                final String scannedData = barcodes.first.rawValue ?? '';
-                _processScannedQR(scannedData, cameraController);
-                isProcessing = true;
-              }
-            },
-          ),
-
-          // Scanner overlay
-          _buildScannerOverlay(),
-
-          // Top buttons
-          Positioned(
-            top: MediaQuery.of(context).padding.top + 16,
-            left: 16,
-            right: 16,
-            child: Row(
-              children: [
-                GestureDetector(
-                  onTap: () {
-                    cameraController.dispose();
-                    Navigator.pop(context);
-                    setState(() {
-                      _isScanning = false;
-                    });
-                  },
-                  child: Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withOpacity(0.5),
-                      shape: BoxShape.circle,
-                    ),
-                    child: const Icon(
-                      Icons.arrow_back_rounded,
-                      color: Colors.white,
-                      size: 24,
-                    ),
-                  ),
-                ),
-                const Spacer(),
-                GestureDetector(
-                  onTap: () {
-                    cameraController.toggleTorch();
-                  },
-                  child: Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withOpacity(0.5),
-                      shape: BoxShape.circle,
-                    ),
-                    child: ValueListenableBuilder(
-                      valueListenable: cameraController.torchState,
-                      builder: (context, state, child) {
-                        return Icon(
-                          state == TorchState.on 
-                              ? Icons.flash_on_rounded 
-                              : Icons.flash_off_rounded,
-                          color: Colors.white,
-                          size: 24,
-                        );
-                      },
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-
-          // Bottom info
-          Positioned(
-            bottom: 24,
-            left: 24,
-            right: 24,
-            child: Column(
-              children: [
-                Text(
-                  'Scan Container QR Code\n${_containerNo}',
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 16,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-                const SizedBox(height: 16),
-                ElevatedButton(
-                  onPressed: () {
-                    cameraController.dispose();
-                    Navigator.pop(context);
-                    setState(() {
-                      _isScanning = false;
-                    });
-                  },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF6B7280),
-                    foregroundColor: Colors.white,
-                    minimumSize: const Size(double.infinity, 48),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                  child: const Text('Cancel Scan'),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
     );
   }
 
-  Widget _buildScannerOverlay() {
-    return Container(
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [
-            Colors.black.withOpacity(0.7),
-            Colors.transparent,
-            Colors.transparent,
-            Colors.black.withOpacity(0.7),
-          ],
-          stops: const [0.0, 0.3, 0.7, 1.0],
-        ),
-      ),
-      child: Column(
-        children: [
-          const Expanded(flex: 2, child: SizedBox()),
-          Expanded(
-            flex: 3,
-            child: Row(
-              children: [
-                const Expanded(flex: 1, child: SizedBox()),
-                Expanded(
-                  flex: 8,
-                  child: Container(
-                    decoration: BoxDecoration(
-                      border: Border.all(
-                        color: Colors.white,
-                        width: 2,
-                      ),
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    child: Column(
-                      children: [
-                        const Expanded(flex: 1, child: SizedBox()),
-                        Container(
-                          height: 2,
-                          color: Colors.white,
-                        ),
-                        const Expanded(flex: 1, child: SizedBox()),
-                      ],
-                    ),
-                  ),
-                ),
-                const Expanded(flex: 1, child: SizedBox()),
-              ],
-            ),
-          ),
-          const Expanded(flex: 2, child: SizedBox()),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _processScannedQR(String scannedData, MobileScannerController controller) async {
-    // Stop camera
-    controller.stop();
-
-    // Close scanner modal
-    Navigator.pop(context);
+  void _handlePhotoTaken(File imageFile) {
     setState(() {
-      _isScanning = false;
+      _proofOfDeliveryImage = imageFile;
+      _hasProofImage = true;
+      _isTakingPhoto = false;
     });
 
-    // Validate scanned QR data
-    if (scannedData.contains(_containerNo) || scannedData.contains(_cargoId)) {
-      _showScanSuccessModal(scannedData);
-    } else {
-      _showErrorModal('Invalid QR Code. Please scan the correct container QR code.');
-    }
+    _showPhotoPreviewModal(imageFile.path);
   }
 
-  void _showScanSuccessModal(String scannedData) {
+  void _showPhotoPreviewModal(String imagePath) {
     showDialog(
       context: context,
       builder: (BuildContext context) {
@@ -989,18 +870,31 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
                     shape: BoxShape.circle,
                   ),
                   child: const Icon(
-                    Icons.qr_code_scanner_rounded,
+                    Icons.photo_camera_rounded,
                     color: Color(0xFF10B981),
                     size: 40,
                   ),
                 ),
                 const SizedBox(height: 16),
                 const Text(
-                  "Scan Successful!",
+                  "Photo Captured!",
                   style: TextStyle(
                     fontSize: 20,
                     fontWeight: FontWeight.w700,
                     color: Color(0xFF1E293B),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Container(
+                  width: double.infinity,
+                  height: 200,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(12),
+                    image: DecorationImage(
+                      image: FileImage(File(imagePath)),
+                      fit: BoxFit.cover,
+                    ),
+                    border: Border.all(color: const Color(0xFFE2E8F0)),
                   ),
                 ),
                 const SizedBox(height: 16),
@@ -1045,13 +939,13 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
                       Row(
                         children: [
                           const Icon(
-                            Icons.qr_code_rounded,
+                            Icons.access_time_rounded,
                             color: Color(0xFF64748B),
                             size: 16,
                           ),
                           const SizedBox(width: 8),
                           const Text(
-                            "Scanned Data:",
+                            "Captured:",
                             style: TextStyle(
                               fontSize: 14,
                               color: Color(0xFF64748B),
@@ -1061,7 +955,7 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        scannedData,
+                        DateFormat('MMM dd, yyyy - HH:mm').format(DateTime.now()),
                         style: const TextStyle(
                           fontSize: 14,
                           color: Color(0xFF1E293B),
@@ -1072,7 +966,7 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
                 ),
                 const SizedBox(height: 16),
                 const Text(
-                  'Scan verified successfully!',
+                  'Proof of delivery photo captured successfully!',
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     fontSize: 14,
@@ -1258,6 +1152,12 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
                       _buildDetailRow(Icons.place_rounded, _pickup, ""),
                       _buildDetailRow(Icons.flag_rounded, _destination, ""),
                       _buildDetailRow(Icons.person_rounded, "Driver Assigned: $_driverName", ""),
+                      // Proof of Delivery Status
+                      _buildDetailRow(
+                        Icons.photo_camera_rounded,
+                        "Proof of Delivery:",
+                        _hasProofImage ? "Captured" : "Required"
+                      ),
                       const SizedBox(height: 12),
                       Container(
                         padding: const EdgeInsets.all(12),
@@ -1333,7 +1233,7 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
                             style: TextStyle(
                               fontSize: 16,
                               fontWeight: FontWeight.w700,
-                              color: Color(0xFF1E293B),
+                            color: Color(0xFF1E293B),
                             ),
                           ),
                         ],
@@ -1529,12 +1429,12 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
           ),
           padding: EdgeInsets.symmetric(vertical: isTablet ? 16 : 12),
         ),
-        onPressed: isDelivered ? null : _showQRScanner,
-        icon: Icon(Icons.qr_code_scanner_rounded, 
+        onPressed: isDelivered ? null : _showCameraModal,
+        icon: Icon(Icons.photo_camera_rounded, 
             size: 20, 
             color: isDelivered ? const Color(0xFF94A3B8) : const Color(0xFF3B82F6)),
         label: Text(
-          "Scan QR",
+          "Proof of Delivery",
           style: TextStyle(
             fontSize: isTablet ? 16 : 14,
             fontWeight: FontWeight.w600,
@@ -1578,7 +1478,7 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
     Expanded(
       child: ElevatedButton.icon(
         style: ElevatedButton.styleFrom(
-          backgroundColor: (isDelivered || isDelayed) 
+          backgroundColor: (isDelivered || isDelayed || !_hasProofImage) 
               ? const Color(0xFF94A3B8)
               : const Color(0xFF10B981),
           foregroundColor: Colors.white,
@@ -1588,7 +1488,7 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
           ),
           padding: EdgeInsets.symmetric(vertical: isTablet ? 16 : 12),
         ),
-        onPressed: (isDelivered || isDelayed) ? null : () => _showDeliveryConfirmationModal(context),
+        onPressed: (isDelivered || isDelayed || !_hasProofImage) ? null : () => _showDeliveryConfirmationModal(context),
         icon: const Icon(Icons.check_circle_rounded, size: 20),
         label: Text(
           "Mark Delivered",
@@ -1626,10 +1526,10 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
           if (value.isNotEmpty)
             Text(
               value,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 14,
                 fontWeight: FontWeight.w600,
-                color: Color(0xFF1E293B),
+                color: value == "Required" ? const Color(0xFFEF4444) : const Color(0xFF1E293B),
               ),
             ),
         ],
@@ -1994,6 +1894,33 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
                           color: Color(0xFF1E293B),
                         ),
                       ),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          const Icon(
+                            Icons.photo_camera_rounded,
+                            color: Color(0xFF64748B),
+                            size: 16,
+                          ),
+                          const SizedBox(width: 8),
+                          const Text(
+                            "Proof of Delivery:",
+                            style: TextStyle(
+                              fontSize: 14,
+                              color: Color(0xFF64748B),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        _hasProofImage ? "Captured ✓" : "Not Available",
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                          color: _hasProofImage ? const Color(0xFF10B981) : const Color(0xFFEF4444),
+                        ),
+                      ),
                     ],
                   ),
                 ),
@@ -2052,7 +1979,360 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
   }
 }
 
-// New Realtime Location Map Widget
+// Full Screen Camera Widget
+class FullScreenCamera extends StatefulWidget {
+  final String containerNo;
+  final Function(File) onPhotoTaken;
+  final Function() onCancel;
+
+  const FullScreenCamera({
+    super.key,
+    required this.containerNo,
+    required this.onPhotoTaken,
+    required this.onCancel,
+  });
+
+  @override
+  State<FullScreenCamera> createState() => _FullScreenCameraState();
+}
+
+
+class _FullScreenCameraState extends State<FullScreenCamera> {
+  CameraController? _cameraController;
+  List<CameraDescription>? _cameras;
+  int _selectedCameraIndex = 0;
+  bool _isInitializing = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _initializeCamera();
+  }
+
+  @override
+  void dispose() {
+    _cameraController?.dispose();
+    super.dispose();
+  }
+
+  Future<void> _initializeCamera() async {
+    try {
+      _cameras = await availableCameras();
+      if (_cameras != null && _cameras!.isNotEmpty) {
+        _cameraController = CameraController(
+          _cameras![_selectedCameraIndex],
+          ResolutionPreset.high,
+          enableAudio: false,
+        );
+        await _cameraController!.initialize();
+        setState(() {
+          _isInitializing = false;
+        });
+      } else {
+        setState(() {
+          _isInitializing = false;
+        });
+      }
+    } catch (e) {
+      print('Error initializing camera: $e');
+      setState(() {
+        _isInitializing = false;
+      });
+    }
+  }
+
+  Future<void> _switchCamera() async {
+    if (_cameras == null || _cameras!.length <= 1) return;
+
+    final newCameraIndex = (_selectedCameraIndex + 1) % _cameras!.length;
+    
+    await _cameraController?.dispose();
+    
+    setState(() {
+      _selectedCameraIndex = newCameraIndex;
+      _isInitializing = true;
+    });
+
+    _cameraController = CameraController(
+      _cameras![_selectedCameraIndex],
+      ResolutionPreset.high,
+      enableAudio: false,
+    );
+
+    try {
+      await _cameraController!.initialize();
+      setState(() {
+        _isInitializing = false;
+      });
+    } catch (e) {
+      print('Error switching camera: $e');
+      setState(() {
+        _isInitializing = false;
+      });
+    }
+  }
+
+  Future<void> _takePicture() async {
+    if (_cameraController == null || !_cameraController!.value.isInitialized) {
+      return;
+    }
+
+    try {
+      // Ensure flash is off when capturing
+      await _cameraController!.setFlashMode(FlashMode.off);
+      
+      final XFile picture = await _cameraController!.takePicture();
+      final File imageFile = File(picture.path);
+      
+      // Return to previous screen with the captured image
+      Navigator.pop(context);
+      widget.onPhotoTaken(imageFile);
+    } catch (e) {
+      print('Error taking picture: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Error taking picture'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: SafeArea(
+        child: Stack(
+          children: [
+            // Camera Preview (Full Screen)
+            if (_cameraController != null && _cameraController!.value.isInitialized)
+              SizedBox(
+                width: double.infinity,
+                height: double.infinity,
+                child: CameraPreview(_cameraController!),
+              )
+            else if (_isInitializing)
+              const Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    CircularProgressIndicator(
+                      valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                    ),
+                    SizedBox(height: 16),
+                    Text(
+                      'Initializing Camera...',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            else
+              const Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.camera_alt_rounded,
+                      color: Colors.white54,
+                      size: 64,
+                    ),
+                    SizedBox(height: 16),
+                    Text(
+                      'Camera not available',
+                      style: TextStyle(
+                        color: Colors.white54,
+                        fontSize: 16,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+            // Top Bar
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [
+                      Colors.black.withOpacity(0.7),
+                      Colors.transparent,
+                    ],
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    GestureDetector(
+                      onTap: widget.onCancel,
+                      child: Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withOpacity(0.5),
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(
+                          Icons.close_rounded,
+                          color: Colors.white,
+                          size: 24,
+                        ),
+                      ),
+                    ),
+                    const Spacer(),
+                    Text(
+                      'Proof of Delivery - ${widget.containerNo}',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const Spacer(),
+                    // Placeholder for alignment
+                    const SizedBox(width: 40),
+                  ],
+                ),
+              ),
+            ),
+
+            // Camera Controls (Bottom)
+            Positioned(
+              bottom: 0,
+              left: 0,
+              right: 0,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.bottomCenter,
+                    end: Alignment.topCenter,
+                    colors: [
+                      Colors.black.withOpacity(0.7),
+                      Colors.transparent,
+                    ],
+                  ),
+                ),
+                child: Column(
+                  children: [
+                    // Camera Options Row
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceAround,
+                      children: [
+                        // Empty space where flash button used to be
+                        const SizedBox(width: 48),
+
+                        // Capture Button (Large)
+                        GestureDetector(
+                          onTap: _takePicture,
+                          child: Container(
+                            width: 70,
+                            height: 70,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                color: Colors.white,
+                                width: 3,
+                              ),
+                            ),
+                            child: Container(
+                              margin: const EdgeInsets.all(6),
+                              decoration: const BoxDecoration(
+                                color: Colors.white,
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                          ),
+                        ),
+
+                        // Camera Switch
+                        if (_cameras != null && _cameras!.length > 1)
+                          GestureDetector(
+                            onTap: _switchCamera,
+                            child: Container(
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: Colors.black.withOpacity(0.5),
+                                shape: BoxShape.circle,
+                              ),
+                              child: const Icon(
+                                Icons.cameraswitch_rounded,
+                                color: Colors.white,
+                                size: 24,
+                              ),
+                            ),
+                          )
+                        else
+                          const SizedBox(width: 48), // Placeholder for alignment
+                      ],
+                    ),
+
+                    const SizedBox(height: 20),
+
+                    // Instruction Text
+                    const Text(
+                      'Position the container in frame and tap to capture',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+            // Capture Frame Overlay
+            Positioned(
+              top: MediaQuery.of(context).size.height * 0.25,
+              left: 24,
+              right: 24,
+              child: Container(
+                height: MediaQuery.of(context).size.height * 0.3,
+                decoration: BoxDecoration(
+                  border: Border.all(
+                    color: Colors.white.withOpacity(0.7),
+                    width: 2,
+                  ),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(
+                      Icons.photo_camera_rounded,
+                      color: Colors.white54,
+                      size: 40,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      widget.containerNo,
+                      style: const TextStyle(
+                        color: Colors.white54,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// Realtime Location Map Widget
 class RealtimeLocationMap extends StatelessWidget {
   final LatLng courierLocation;
   final List<LatLng> deliveryRoute;
@@ -2224,7 +2504,7 @@ class RealtimeLocationMap extends StatelessWidget {
 
   double _calculateTotalRouteDistance() {
     double total = 0.0;
-    for (int i = 0; i < deliveryRoute.length - 1; i++) {
+    for (int i = 0; i < deliveryRoute.length - 1; i++) { 
       total += calculateDistance(deliveryRoute[i], deliveryRoute[i + 1]);
     }
     return total;

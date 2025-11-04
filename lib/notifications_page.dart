@@ -205,7 +205,6 @@ class _NotificationsPageState extends State<NotificationsPage> {
     }
   }
 
-  // ... (Keep all the existing helper methods: _getNotificationIcon, _getNotificationColor, etc.)
   IconData _getNotificationIcon(String type) {
     switch (type) {
       case 'warning':
@@ -298,100 +297,8 @@ class _NotificationsPageState extends State<NotificationsPage> {
   }
 
   void _handleNotificationTap(Map<String, dynamic> notification) {
-    final type = notification['type'];
-    final cargoId = notification['cargoId'];
-    final containerNo = notification['containerNo'];
-
-    if ((type == 'new_cargo' || type == 'delivery_assigned' || type == 'status_update') && cargoId != null) {
-      _navigateToContainerDetails(cargoId, containerNo);
-    } else {
-      _showNotificationDetails(notification);
-    }
-  }
-
-  Future<void> _navigateToContainerDetails(String cargoId, String? containerNo) async {
-    try {
-      DocumentSnapshot cargoDoc = await _firestore
-          .collection('Cargo')
-          .doc(cargoId)
-          .get();
-      
-      if (cargoDoc.exists) {
-        final cargoData = cargoDoc.data() as Map<String, dynamic>;
-        
-        QuerySnapshot deliverySnapshot = await _firestore
-            .collection('CargoDelivery')
-            .where('cargo_id', isEqualTo: cargoId)
-            .limit(1)
-            .get();
-            
-        Map<String, dynamic> combinedData = {
-          ...cargoData,
-          'cargo_id': cargoId,
-          'containerNo': containerNo ?? 'CONT-${cargoData['item_number'] ?? 'N/A'}',
-        };
-        
-        bool isAvailable = deliverySnapshot.docs.isEmpty;
-        
-        if (deliverySnapshot.docs.isNotEmpty) {
-          final deliveryData = deliverySnapshot.docs.first.data() as Map<String, dynamic>;
-          combinedData = {
-            ...combinedData,
-            'delivery_id': deliverySnapshot.docs.first.id,
-            'confirmed_at': deliveryData['confirmed_at'],
-            'status': deliveryData['status'],
-            'courier_id': deliveryData['courier_id'],
-          };
-        }
-        
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (context) => ContainerDetailsPage(
-              containerData: combinedData,
-              isAvailable: isAvailable,
-            ),
-          ),
-        );
-      } else {
-        final basicData = {
-          'cargo_id': cargoId,
-          'containerNo': containerNo ?? 'N/A',
-          'status': 'pending',
-          'origin': 'Unknown',
-          'destination': 'Unknown',
-        };
-        
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (context) => ContainerDetailsPage(
-              containerData: basicData,
-              isAvailable: true,
-            ),
-          ),
-        );
-      }
-    } catch (e) {
-      print('Error navigating to container details: $e');
-      final basicData = {
-        'cargo_id': cargoId,
-        'containerNo': containerNo ?? 'N/A',
-        'status': 'pending',
-        'origin': 'Unknown',
-        'destination': 'Unknown',
-      };
-      
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (context) => ContainerDetailsPage(
-            containerData: basicData,
-            isAvailable: true,
-          ),
-        ),
-      );
-    }
+    // Only show notification details, no navigation to other pages
+    _showNotificationDetails(notification);
   }
 
   void _showNotificationDetails(Map<String, dynamic> notification) {

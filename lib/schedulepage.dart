@@ -411,12 +411,22 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
                             ),
                           ],
                         ),
-                        const SizedBox(height: 16),
-                        const Text(
-                          "Today's Schedule",
-                          style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: Colors.white),
-                        ),
                       ],
+                    ),
+                  ),
+
+                  // Today's Schedule Title (moved outside header)
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.fromLTRB(16, 20, 16, 16),
+                    child: const Text(
+                      "Today's Schedule",
+                      style: TextStyle(
+                        fontSize: 20, 
+                        fontWeight: FontWeight.w700, 
+                        color: Color(0xFF1E293B)
+                      ),
+                      textAlign: TextAlign.center,
                     ),
                   ),
 

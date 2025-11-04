@@ -1018,7 +1018,7 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
                     children: [
                       Expanded(
                         child: _buildActionCard(
-                          "Order History",
+                          "Delivery History",
                           Icons.history,
                           const Color(0xFF3B82F6),
                           "View",
@@ -1137,7 +1137,7 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
               Text(
                 title == "Cargos" ? "Available for delivery" : 
                 title == "Track" ? "Track your cargo" :
-                title == "Order History" ? "View past orders" : "View performance",
+                title == "Delivery History" ? "View past delivery" : "View performance",
                 style: const TextStyle(
                   fontSize: 12,
                   color: Color(0xFF64748B),
