@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'header_widget.dart';
 import 'homepage.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -11,15 +10,43 @@ class LoginPage extends StatefulWidget {
   State<LoginPage> createState() => _LoginPageState();
 }
 
-class _LoginPageState extends State<LoginPage> {
+class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
   final _formKey = GlobalKey<FormState>();
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   bool _isPasswordVisible = false;
   bool _isLoading = false;
+  bool _showSuccessAnimation = false;
+
+  late AnimationController _successAnimationController;
+  late Animation<double> _scaleAnimation;
+  late Animation<double> _opacityAnimation;
 
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+
+  @override
+  void initState() {
+    super.initState();
+    _successAnimationController = AnimationController(
+      duration: const Duration(milliseconds: 2000),
+      vsync: this,
+    );
+
+    _scaleAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(
+        parent: _successAnimationController,
+        curve: const Interval(0.0, 0.5, curve: Curves.elasticOut),
+      ),
+    );
+
+    _opacityAnimation = Tween<double>(begin: 1.0, end: 0.0).animate(
+      CurvedAnimation(
+        parent: _successAnimationController,
+        curve: const Interval(0.7, 1.0, curve: Curves.easeInOut),
+      ),
+    );
+  }
 
   // Check if courier exists in Firestore
   Future<bool> _courierExists(String email) async {
@@ -89,7 +116,6 @@ class _LoginPageState extends State<LoginPage> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              // Email Icon Container
               Container(
                 width: 80,
                 height: 80,
@@ -104,8 +130,6 @@ class _LoginPageState extends State<LoginPage> {
                 ),
               ),
               const SizedBox(height: 20),
-              
-              // Title
               Text(
                 title,
                 style: TextStyle(
@@ -116,8 +140,6 @@ class _LoginPageState extends State<LoginPage> {
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 12),
-              
-              // Description
               Text(
                 "Please enter your correct password",
                 style: TextStyle(
@@ -128,7 +150,6 @@ class _LoginPageState extends State<LoginPage> {
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 8),
-              
               Text(
                 description,
                 style: TextStyle(
@@ -139,8 +160,6 @@ class _LoginPageState extends State<LoginPage> {
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 16),
-              
-              // Email Solution Box
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.all(16),
@@ -187,8 +206,6 @@ class _LoginPageState extends State<LoginPage> {
                 ),
               ),
               const SizedBox(height: 24),
-              
-              // Action Button
               SizedBox(
                 width: double.infinity,
                 height: 48,
@@ -203,7 +220,6 @@ class _LoginPageState extends State<LoginPage> {
                   ),
                   onPressed: () {
                     Navigator.pop(context);
-                    // Focus back to email field
                     FocusScope.of(context).requestFocus(FocusNode());
                     Future.delayed(Duration(milliseconds: 300), () {
                       FocusScope.of(context).requestFocus(_emailFocus);
@@ -250,7 +266,6 @@ class _LoginPageState extends State<LoginPage> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              // Password Icon Container
               Container(
                 width: 80,
                 height: 80,
@@ -265,8 +280,6 @@ class _LoginPageState extends State<LoginPage> {
                 ),
               ),
               const SizedBox(height: 20),
-              
-              // Title
               Text(
                 title,
                 style: TextStyle(
@@ -277,8 +290,6 @@ class _LoginPageState extends State<LoginPage> {
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 12),
-              
-              // Description
               Text(
                 "Password Issue",
                 style: TextStyle(
@@ -289,7 +300,6 @@ class _LoginPageState extends State<LoginPage> {
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 8),
-              
               Text(
                 description,
                 style: TextStyle(
@@ -300,8 +310,6 @@ class _LoginPageState extends State<LoginPage> {
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 16),
-              
-              // Password Solution Box
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.all(16),
@@ -348,8 +356,6 @@ class _LoginPageState extends State<LoginPage> {
                 ),
               ),
               const SizedBox(height: 24),
-              
-              // Action Buttons
               Row(
                 children: [
                   Expanded(
@@ -387,7 +393,6 @@ class _LoginPageState extends State<LoginPage> {
                       ),
                       onPressed: () {
                         Navigator.pop(context);
-                        // Focus back to password field
                         FocusScope.of(context).requestFocus(FocusNode());
                         Future.delayed(Duration(milliseconds: 300), () {
                           FocusScope.of(context).requestFocus(_passwordFocus);
@@ -482,7 +487,6 @@ class _LoginPageState extends State<LoginPage> {
         String email = _emailController.text.trim();
         String password = _passwordController.text.trim();
 
-        // 1) Check Firestore "Couriers" collection for the email first
         final courierExists = await _courierExists(email);
         if (!courierExists) {
           _showEmailErrorModal(
@@ -498,13 +502,11 @@ class _LoginPageState extends State<LoginPage> {
           return;
         }
 
-        // 2) Attempt Firebase Auth sign-in
         final UserCredential userCredential = await _auth
             .signInWithEmailAndPassword(email: email, password: password);
 
         final user = userCredential.user;
 
-        // 3) If signed in but email not verified -> sign out and show message
         if (user != null && !user.emailVerified) {
           await _auth.signOut();
           _showNotification("Please verify your email before logging in.", false);
@@ -516,10 +518,15 @@ class _LoginPageState extends State<LoginPage> {
           return;
         }
 
-        // Successful sign in and verified
-        _showNotification("Login successful! Welcome back.", true);
+        // Show success animation
+        setState(() {
+          _showSuccessAnimation = true;
+        });
 
-        await Future.delayed(const Duration(milliseconds: 500));
+        _successAnimationController.forward();
+
+        await Future.delayed(const Duration(milliseconds: 2000));
+        
         if (mounted) {
           Navigator.pushReplacement(
             context,
@@ -528,7 +535,6 @@ class _LoginPageState extends State<LoginPage> {
         }
 
       } on FirebaseAuthException catch (e) {
-        // Handle specific Firebase Auth errors
         if (e.code == 'wrong-password' || e.code == 'too-many-requests') {
           _handlePasswordError(e.code);
         } else if (e.code == 'invalid-email') {
@@ -560,7 +566,6 @@ class _LoginPageState extends State<LoginPage> {
     }
   }
 
-  // Basic validation for empty fields
   String? _validateEmail(String? value) {
     if (value == null || value.isEmpty) {
       return 'Please enter your email address';
@@ -579,12 +584,69 @@ class _LoginPageState extends State<LoginPage> {
   Widget build(BuildContext context) {
     final bool isMobile = MediaQuery.of(context).size.width < 600;
 
+    if (_showSuccessAnimation) {
+      return Scaffold(
+        backgroundColor: const Color(0xFFF8FAFC),
+        body: Center(
+          child: FadeTransition(
+            opacity: _opacityAnimation,
+            child: ScaleTransition(
+              scale: _scaleAnimation,
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Container(
+                    width: 120,
+                    height: 120,
+                    decoration: BoxDecoration(
+                      color: Color(0xFF10B981).withOpacity(0.1),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(
+                      Icons.check_circle_rounded,
+                      size: 80,
+                      color: Color(0xFF10B981),
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  Text(
+                    "Login Successful!",
+                    style: TextStyle(
+                      fontSize: 28,
+                      fontWeight: FontWeight.bold,
+                      color: Color(0xFF1E293B),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    "Welcome back to your dashboard",
+                    style: TextStyle(
+                      fontSize: 16,
+                      color: Color(0xFF64748B),
+                    ),
+                  ),
+                  const SizedBox(height: 32),
+                  SizedBox(
+                    width: 50,
+                    height: 50,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 4,
+                      valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF3B82F6)),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
       body: SingleChildScrollView(
         child: Column(
           children: [
-            // Responsive Header
             Container(
               width: double.infinity,
               padding: EdgeInsets.fromLTRB(
@@ -609,7 +671,6 @@ class _LoginPageState extends State<LoginPage> {
               ),
               child: Column(
                 children: [
-                  // Responsive Logo and Brand Name
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
@@ -640,8 +701,6 @@ class _LoginPageState extends State<LoginPage> {
                     ],
                   ),
                   SizedBox(height: isMobile ? 12 : 20),
-                  
-                  // Responsive Tagline
                   Text(
                     "Smart Cargo • Real-Time Tracking • Global Reach",
                     style: TextStyle(
@@ -654,8 +713,6 @@ class _LoginPageState extends State<LoginPage> {
                     maxLines: 2,
                   ),
                   SizedBox(height: isMobile ? 6 : 8),
-                  
-                  // Responsive Description
                   Text(
                     "Professional Logistics Management Platform",
                     style: TextStyle(
@@ -670,7 +727,6 @@ class _LoginPageState extends State<LoginPage> {
               ),
             ),
 
-            // Login Form
             Container(
               margin: const EdgeInsets.all(20),
               padding: EdgeInsets.all(isMobile ? 20 : 28),
@@ -718,7 +774,6 @@ class _LoginPageState extends State<LoginPage> {
                     ),
                     const SizedBox(height: 32),
                     
-                    // Email Field
                     Text(
                       "Email Address",
                       style: TextStyle(
@@ -772,7 +827,6 @@ class _LoginPageState extends State<LoginPage> {
                     ),
                     const SizedBox(height: 20),
                     
-                    // Password Field
                     Text(
                       "Password",
                       style: TextStyle(
@@ -837,7 +891,6 @@ class _LoginPageState extends State<LoginPage> {
                     ),
                     const SizedBox(height: 24),
                     
-                    // Forgot Password
                     Align(
                       alignment: Alignment.centerRight,
                       child: TextButton(
@@ -856,7 +909,6 @@ class _LoginPageState extends State<LoginPage> {
                     ),
                     const SizedBox(height: 24),
                     
-                    // Sign In Button with Icon
                     SizedBox(
                       width: double.infinity,
                       height: 50,
@@ -903,7 +955,6 @@ class _LoginPageState extends State<LoginPage> {
                     
                     const SizedBox(height: 24),
                     
-                    // Sign Up Link
                     Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
@@ -965,7 +1016,6 @@ class _LoginPageState extends State<LoginPage> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // Icon
                   Container(
                     width: 60,
                     height: 60,
@@ -1123,12 +1173,13 @@ class _LoginPageState extends State<LoginPage> {
     );
   }
 
-  @override
-  void dispose() {
-    _emailController.dispose();
-    _passwordController.dispose();
-    _emailFocus.dispose();
-    _passwordFocus.dispose();
-    super.dispose();
+    @override
+    void dispose() {
+      _emailController.dispose();
+      _passwordController.dispose();
+      _emailFocus.dispose();
+      _passwordFocus.dispose();
+      _successAnimationController.dispose();
+      super.dispose();
+    }
   }
-}
