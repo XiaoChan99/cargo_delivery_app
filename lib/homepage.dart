@@ -367,11 +367,6 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
         'remarks': 'Accepted by courier',
       });
 
-      // Update cargo status
-      await _firestore.collection('Cargo').doc(cargoData['cargo_id']).update({
-        'status': 'in-progress',
-        'updated_at': Timestamp.now(),
-      });
 
       // Create notification for admin
       try {
