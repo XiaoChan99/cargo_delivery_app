@@ -116,7 +116,12 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
             .limit(1)
             .get();
         
-        if (proofQuery.docs.isNotEmpty) {
+        setState(() {
+          _hasProofImage = proofQuery.docs.isNotEmpty;
+        });
+        
+        // Also check if proof image URL exists in delivery data
+        if (_deliveryData != null && _deliveryData!['proof_image_url'] != null) {
           setState(() {
             _hasProofImage = true;
           });
@@ -124,6 +129,9 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
       }
     } catch (e) {
       print('Error checking proof image: $e');
+      setState(() {
+        _hasProofImage = false;
+      });
     }
   }
 
@@ -500,73 +508,85 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
         return;
       }
 
-      // Check if proof image exists
-      if (!_hasProofImage && _proofOfDeliveryImage == null) {
-        _showErrorModal('Proof of delivery image is required before marking as delivered');
-        return;
-      }
+    // Check if proof image exists - allow if either existing proof or new proof
+    if (!_hasProofImage && _proofOfDeliveryImage == null) {
+      _showErrorModal('Proof of delivery image is required before marking as delivered');
+      return;
+    }
 
-      // Upload proof image if taken in current session
-      String? imageUrl;
-      if (_proofOfDeliveryImage != null) {
-        imageUrl = await _uploadProofImage(_proofOfDeliveryImage!);
-      }
-
-      // Update CargoDelivery status
-      QuerySnapshot deliveryQuery = await _firestore
-          .collection('CargoDelivery')
+    // Upload proof image if taken in current session
+    String? imageUrl;
+    if (_proofOfDeliveryImage != null) {
+      imageUrl = await _uploadProofImage(_proofOfDeliveryImage!);
+    } else if (_hasProofImage) {
+      // If proof already exists but no new image, use the existing one
+      QuerySnapshot proofQuery = await _firestore
+          .collection('proof_image')
           .where('cargo_id', isEqualTo: _cargoId)
           .limit(1)
           .get();
-
-      final updateData = {
-        'status': 'delivered',
-        'confirmed_at': Timestamp.now(),
-        'remarks': 'Delivery completed successfully',
-        'updated_at': Timestamp.now(),
-      };
-
-      if (imageUrl != null) {
-        updateData['proof_image_url'] = imageUrl;
-      }
-
-      if (deliveryQuery.docs.isNotEmpty) {
-        await deliveryQuery.docs.first.reference.update(updateData);
-      } else {
-        // Create new delivery record if it doesn't exist
-        await _firestore.collection('CargoDelivery').add({
-          'cargo_id': _cargoId,
-          'courier_id': user.uid,
-          ...updateData,
-          'created_at': Timestamp.now(),
-        });
-      }
-
-      // Create delivery completed notification
-      await _firestore.collection('Notifications').add({
-        'userId': user.uid,
-        'type': 'delivery_completed',
-        'message': 'Delivery completed for Container $_containerNo',
-        'timestamp': Timestamp.now(),
-        'read': false,
-        'cargoId': _cargoId,
-        'containerNo': _containerNo,
-      });
-
-      // Update local state
-      setState(() {
-        _deliveryData?['status'] = 'delivered';
-        _progress = 1.0;
-        _eta = 'Arrived';
-        _hasProofImage = true;
-      });
-
-      _showSuccessModal('Delivery marked as completed successfully!');
       
-      // Navigate back to home after delay
-      Future.delayed(const Duration(seconds: 2), () {
-        Navigator.pushNamedAndRemoveUntil(context, '/home', (route) => false);
+      if (proofQuery.docs.isNotEmpty) {
+        final proofData = proofQuery.docs.first.data() as Map<String, dynamic>;
+        imageUrl = proofData['proof_image_url'] ?? 'existing_proof';
+      }
+    }
+
+    // Update CargoDelivery status
+    QuerySnapshot deliveryQuery = await _firestore
+        .collection('CargoDelivery')
+        .where('cargo_id', isEqualTo: _cargoId)
+        .limit(1)
+        .get();
+
+    final updateData = {
+      'status': 'delivered',
+      'confirmed_at': Timestamp.now(),
+      'remarks': 'Delivery completed successfully',
+      'updated_at': Timestamp.now(),
+    };
+
+    if (imageUrl != null && imageUrl != 'existing_proof') {
+      updateData['proof_image_url'] = imageUrl;
+    }
+
+    if (deliveryQuery.docs.isNotEmpty) {
+      await deliveryQuery.docs.first.reference.update(updateData);
+    } else {
+      // Create new delivery record if it doesn't exist
+      await _firestore.collection('CargoDelivery').add({
+        'cargo_id': _cargoId,
+        'courier_id': user.uid,
+        ...updateData,
+        'created_at': Timestamp.now(),
       });
+    }
+
+    // Create delivery completed notification
+    await _firestore.collection('Notifications').add({
+      'userId': user.uid,
+      'type': 'delivery_completed',
+      'message': 'Delivery completed for Container $_containerNo',
+      'timestamp': Timestamp.now(),
+      'read': false,
+      'cargoId': _cargoId,
+      'containerNo': _containerNo,
+    });
+
+    // Update local state
+    setState(() {
+      _deliveryData?['status'] = 'delivered';
+      _progress = 1.0;
+      _eta = 'Arrived';
+      _hasProofImage = true; // Ensure this is set to true after delivery
+    });
+
+    _showSuccessModal('Delivery marked as completed successfully!');
+    
+    // Navigate back to home after delay
+    Future.delayed(const Duration(seconds: 2), () {
+      Navigator.pushNamedAndRemoveUntil(context, '/home', (route) => false);
+    });
     } catch (e) {
       print('Error confirming delivery: $e');
       _showErrorModal('Failed to confirm delivery: $e');
@@ -837,8 +857,15 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
   void _handlePhotoTaken(File imageFile) {
     setState(() {
       _proofOfDeliveryImage = imageFile;
-      _hasProofImage = true;
+      _hasProofImage = true; // This should immediately update the status
       _isTakingPhoto = false;
+    });
+
+    // Also update Firestore with the proof image
+    _uploadProofImage(imageFile).then((imageUrl) {
+      print('Proof image uploaded successfully');
+    }).catchError((e) {
+      print('Error uploading proof image: $e');
     });
 
     _showPhotoPreviewModal(imageFile.path);
@@ -1156,7 +1183,7 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
                       _buildDetailRow(
                         Icons.photo_camera_rounded,
                         "Proof of Delivery:",
-                        _hasProofImage ? "Captured" : "Required"
+                        _hasProofImage ? "Required": "Not Available"
                       ),
                       const SizedBox(height: 12),
                       Container(
@@ -1411,6 +1438,7 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
   List<Widget> _buildActionButtons(BuildContext context, bool isTablet) {
   final bool isDelivered = _status.toLowerCase() == 'delivered';
   final bool isDelayed = _status.toLowerCase() == 'delayed';
+  final bool hasProof = _hasProofImage || _proofOfDeliveryImage != null;
   
   return [
     Expanded(
@@ -1465,7 +1493,7 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
             size: 20, 
             color: (isDelivered || isDelayed) ? const Color(0xFF94A3B8) : const Color(0xFFF59E0B)),
         label: Text(
-          "Report Delay",
+          isDelayed ? "Delivery Delayed" : "Report Delay",
           style: TextStyle(
             fontSize: isTablet ? 16 : 14,
             fontWeight: FontWeight.w600,
@@ -1478,7 +1506,7 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
     Expanded(
       child: ElevatedButton.icon(
         style: ElevatedButton.styleFrom(
-          backgroundColor: (isDelivered || isDelayed || !_hasProofImage) 
+          backgroundColor: (isDelivered || isDelayed || !hasProof) 
               ? const Color(0xFF94A3B8)
               : const Color(0xFF10B981),
           foregroundColor: Colors.white,
@@ -1488,10 +1516,10 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
           ),
           padding: EdgeInsets.symmetric(vertical: isTablet ? 16 : 12),
         ),
-        onPressed: (isDelivered || isDelayed || !_hasProofImage) ? null : () => _showDeliveryConfirmationModal(context),
+        onPressed: (isDelivered || isDelayed || !hasProof) ? null : () => _showDeliveryConfirmationModal(context),
         icon: const Icon(Icons.check_circle_rounded, size: 20),
         label: Text(
-          "Mark Delivered",
+          isDelayed ? "Cannot Deliver" : "Mark Delivered",
           style: TextStyle(
             fontSize: isTablet ? 16 : 14,
             fontWeight: FontWeight.w600,
@@ -1529,7 +1557,7 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
               style: TextStyle(
                 fontSize: 14,
                 fontWeight: FontWeight.w600,
-                color: value == "Required" ? const Color(0xFFEF4444) : const Color(0xFF1E293B),
+                color: value == "Required" ? const Color(0xFFEF4444) : const Color(0xFF10B981),
               ),
             ),
         ],
@@ -1979,7 +2007,7 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
   }
 }
 
-// Full Screen Camera Widget
+// Fixed Full Screen Camera Widget
 class FullScreenCamera extends StatefulWidget {
   final String containerNo;
   final Function(File) onPhotoTaken;
@@ -1996,12 +2024,12 @@ class FullScreenCamera extends StatefulWidget {
   State<FullScreenCamera> createState() => _FullScreenCameraState();
 }
 
-
 class _FullScreenCameraState extends State<FullScreenCamera> {
   CameraController? _cameraController;
   List<CameraDescription>? _cameras;
   int _selectedCameraIndex = 0;
   bool _isInitializing = true;
+  bool _isCapturing = false;
 
   @override
   void initState() {
@@ -2017,16 +2045,26 @@ class _FullScreenCameraState extends State<FullScreenCamera> {
 
   Future<void> _initializeCamera() async {
     try {
+      WidgetsFlutterBinding.ensureInitialized();
       _cameras = await availableCameras();
+      
       if (_cameras != null && _cameras!.isNotEmpty) {
         _cameraController = CameraController(
           _cameras![_selectedCameraIndex],
-          ResolutionPreset.high,
-          enableAudio: false,
+          ResolutionPreset.medium, // Changed to medium for better compatibility
         );
-        await _cameraController!.initialize();
-        setState(() {
-          _isInitializing = false;
+        
+        await _cameraController!.initialize().then((_) {
+          if (!mounted) return;
+          setState(() {
+            _isInitializing = false;
+          });
+        }).catchError((e) {
+          print('Camera initialization error: $e');
+          if (!mounted) return;
+          setState(() {
+            _isInitializing = false;
+          });
         });
       } else {
         setState(() {
@@ -2035,6 +2073,7 @@ class _FullScreenCameraState extends State<FullScreenCamera> {
       }
     } catch (e) {
       print('Error initializing camera: $e');
+      if (!mounted) return;
       setState(() {
         _isInitializing = false;
       });
@@ -2042,7 +2081,7 @@ class _FullScreenCameraState extends State<FullScreenCamera> {
   }
 
   Future<void> _switchCamera() async {
-    if (_cameras == null || _cameras!.length <= 1) return;
+    if (_cameras == null || _cameras!.length <= 1 || _isCapturing) return;
 
     final newCameraIndex = (_selectedCameraIndex + 1) % _cameras!.length;
     
@@ -2055,17 +2094,18 @@ class _FullScreenCameraState extends State<FullScreenCamera> {
 
     _cameraController = CameraController(
       _cameras![_selectedCameraIndex],
-      ResolutionPreset.high,
-      enableAudio: false,
+      ResolutionPreset.medium,
     );
 
     try {
       await _cameraController!.initialize();
+      if (!mounted) return;
       setState(() {
         _isInitializing = false;
       });
     } catch (e) {
       print('Error switching camera: $e');
+      if (!mounted) return;
       setState(() {
         _isInitializing = false;
       });
@@ -2073,29 +2113,110 @@ class _FullScreenCameraState extends State<FullScreenCamera> {
   }
 
   Future<void> _takePicture() async {
-    if (_cameraController == null || !_cameraController!.value.isInitialized) {
+    if (_cameraController == null || 
+        !_cameraController!.value.isInitialized || 
+        _isCapturing) {
       return;
     }
 
+    setState(() {
+      _isCapturing = true;
+    });
+
     try {
-      // Ensure flash is off when capturing
-      await _cameraController!.setFlashMode(FlashMode.off);
-      
+      // Remove flash mode setting to avoid conflicts
       final XFile picture = await _cameraController!.takePicture();
-      final File imageFile = File(picture.path);
       
-      // Return to previous screen with the captured image
-      Navigator.pop(context);
-      widget.onPhotoTaken(imageFile);
+      // Verify the file exists and is readable
+      final File imageFile = File(picture.path);
+      if (await imageFile.exists()) {
+        // Return to previous screen with the captured image
+        if (mounted) {
+          Navigator.pop(context);
+          widget.onPhotoTaken(imageFile);
+        }
+      } else {
+        throw Exception('Captured image file not found');
+      }
     } catch (e) {
       print('Error taking picture: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Error taking picture'),
-          backgroundColor: Colors.red,
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error taking picture: ${e.toString()}'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isCapturing = false;
+        });
+      }
+    }
+  }
+
+  Widget _buildCameraPreview() {
+    if (_cameraController == null || !_cameraController!.value.isInitialized) {
+      return const Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            CircularProgressIndicator(
+              valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+            ),
+            SizedBox(height: 16),
+            Text(
+              'Initializing Camera...',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 16,
+              ),
+            ),
+          ],
         ),
       );
     }
+
+    return SizedBox(
+      width: double.infinity,
+      height: double.infinity,
+      child: CameraPreview(_cameraController!),
+    );
+  }
+
+  Widget _buildErrorState() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(
+            Icons.camera_alt_rounded,
+            color: Colors.white54,
+            size: 64,
+          ),
+          const SizedBox(height: 16),
+          const Text(
+            'Camera not available',
+            style: TextStyle(
+              color: Colors.white54,
+              fontSize: 16,
+            ),
+          ),
+          const SizedBox(height: 16),
+          ElevatedButton(
+            onPressed: _initializeCamera,
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.white,
+              foregroundColor: Colors.black,
+            ),
+            child: const Text('Retry'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -2106,12 +2227,8 @@ class _FullScreenCameraState extends State<FullScreenCamera> {
         child: Stack(
           children: [
             // Camera Preview (Full Screen)
-            if (_cameraController != null && _cameraController!.value.isInitialized)
-              SizedBox(
-                width: double.infinity,
-                height: double.infinity,
-                child: CameraPreview(_cameraController!),
-              )
+            if (!_isInitializing && _cameraController != null && _cameraController!.value.isInitialized)
+              _buildCameraPreview()
             else if (_isInitializing)
               const Center(
                 child: Column(
@@ -2132,26 +2249,7 @@ class _FullScreenCameraState extends State<FullScreenCamera> {
                 ),
               )
             else
-              const Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(
-                      Icons.camera_alt_rounded,
-                      color: Colors.white54,
-                      size: 64,
-                    ),
-                    SizedBox(height: 16),
-                    Text(
-                      'Camera not available',
-                      style: TextStyle(
-                        color: Colors.white54,
-                        fontSize: 16,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+              _buildErrorState(),
 
             // Top Bar
             Positioned(
@@ -2231,30 +2329,40 @@ class _FullScreenCameraState extends State<FullScreenCamera> {
                         const SizedBox(width: 48),
 
                         // Capture Button (Large)
-                        GestureDetector(
-                          onTap: _takePicture,
-                          child: Container(
-                            width: 70,
-                            height: 70,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              border: Border.all(
-                                color: Colors.white,
-                                width: 3,
+                        _isCapturing
+                            ? const SizedBox(
+                                width: 70,
+                                height: 70,
+                                child: Center(
+                                  child: CircularProgressIndicator(
+                                    valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                                  ),
+                                ),
+                              )
+                            : GestureDetector(
+                                onTap: _takePicture,
+                                child: Container(
+                                  width: 70,
+                                  height: 70,
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    border: Border.all(
+                                      color: Colors.white,
+                                      width: 3,
+                                    ),
+                                  ),
+                                  child: Container(
+                                    margin: const EdgeInsets.all(6),
+                                    decoration: const BoxDecoration(
+                                      color: Colors.white,
+                                      shape: BoxShape.circle,
+                                    ),
+                                  ),
+                                ),
                               ),
-                            ),
-                            child: Container(
-                              margin: const EdgeInsets.all(6),
-                              decoration: const BoxDecoration(
-                                color: Colors.white,
-                                shape: BoxShape.circle,
-                              ),
-                            ),
-                          ),
-                        ),
 
                         // Camera Switch
-                        if (_cameras != null && _cameras!.length > 1)
+                        if (_cameras != null && _cameras!.length > 1 && !_isCapturing)
                           GestureDetector(
                             onTap: _switchCamera,
                             child: Container(
@@ -2278,9 +2386,9 @@ class _FullScreenCameraState extends State<FullScreenCamera> {
                     const SizedBox(height: 20),
 
                     // Instruction Text
-                    const Text(
-                      'Position the container in frame and tap to capture',
-                      style: TextStyle(
+                    Text(
+                      _isCapturing ? 'Capturing...' : 'Position the container in frame and tap to capture',
+                      style: const TextStyle(
                         color: Colors.white,
                         fontSize: 14,
                       ),
@@ -2291,40 +2399,41 @@ class _FullScreenCameraState extends State<FullScreenCamera> {
             ),
 
             // Capture Frame Overlay
-            Positioned(
-              top: MediaQuery.of(context).size.height * 0.25,
-              left: 24,
-              right: 24,
-              child: Container(
-                height: MediaQuery.of(context).size.height * 0.3,
-                decoration: BoxDecoration(
-                  border: Border.all(
-                    color: Colors.white.withOpacity(0.7),
-                    width: 2,
+            if (!_isCapturing)
+              Positioned(
+                top: MediaQuery.of(context).size.height * 0.25,
+                left: 24,
+                right: 24,
+                child: Container(
+                  height: MediaQuery.of(context).size.height * 0.3,
+                  decoration: BoxDecoration(
+                    border: Border.all(
+                      color: Colors.white.withOpacity(0.7),
+                      width: 2,
+                    ),
+                    borderRadius: BorderRadius.circular(12),
                   ),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    const Icon(
-                      Icons.photo_camera_rounded,
-                      color: Colors.white54,
-                      size: 40,
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      widget.containerNo,
-                      style: const TextStyle(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const Icon(
+                        Icons.photo_camera_rounded,
                         color: Colors.white54,
-                        fontSize: 16,
-                        fontWeight: FontWeight.w500,
+                        size: 40,
                       ),
-                    ),
-                  ],
+                      const SizedBox(height: 8),
+                      Text(
+                        widget.containerNo,
+                        style: const TextStyle(
+                          color: Colors.white54,
+                          fontSize: 16,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
-            ),
           ],
         ),
       ),

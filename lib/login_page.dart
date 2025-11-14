@@ -19,8 +19,6 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
   bool _showSuccessAnimation = false;
 
   late AnimationController _successAnimationController;
-  late Animation<double> _scaleAnimation;
-  late Animation<double> _opacityAnimation;
 
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -31,20 +29,6 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
     _successAnimationController = AnimationController(
       duration: const Duration(milliseconds: 2000),
       vsync: this,
-    );
-
-    _scaleAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(
-        parent: _successAnimationController,
-        curve: const Interval(0.0, 0.5, curve: Curves.elasticOut),
-      ),
-    );
-
-    _opacityAnimation = Tween<double>(begin: 1.0, end: 0.0).animate(
-      CurvedAnimation(
-        parent: _successAnimationController,
-        curve: const Interval(0.7, 1.0, curve: Curves.easeInOut),
-      ),
     );
   }
 
@@ -518,12 +502,10 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
           return;
         }
 
-        // Show success animation
+        // Show success screen
         setState(() {
           _showSuccessAnimation = true;
         });
-
-        _successAnimationController.forward();
 
         await Future.delayed(const Duration(milliseconds: 2000));
         
@@ -588,55 +570,27 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
       return Scaffold(
         backgroundColor: const Color(0xFFF8FAFC),
         body: Center(
-          child: FadeTransition(
-            opacity: _opacityAnimation,
-            child: ScaleTransition(
-              scale: _scaleAnimation,
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Container(
-                    width: 120,
-                    height: 120,
-                    decoration: BoxDecoration(
-                      color: Color(0xFF10B981).withOpacity(0.1),
-                      shape: BoxShape.circle,
-                    ),
-                    child: Icon(
-                      Icons.check_circle_rounded,
-                      size: 80,
-                      color: Color(0xFF10B981),
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-                  Text(
-                    "Login Successful!",
-                    style: TextStyle(
-                      fontSize: 28,
-                      fontWeight: FontWeight.bold,
-                      color: Color(0xFF1E293B),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  Text(
-                    "Welcome back to your dashboard",
-                    style: TextStyle(
-                      fontSize: 16,
-                      color: Color(0xFF64748B),
-                    ),
-                  ),
-                  const SizedBox(height: 32),
-                  SizedBox(
-                    width: 50,
-                    height: 50,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 4,
-                      valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF3B82F6)),
-                    ),
-                  ),
-                ],
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              SizedBox(
+                width: 50,
+                height: 50,
+                child: CircularProgressIndicator(
+                  strokeWidth: 4,
+                  valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF3B82F6)),
+                ),
               ),
-            ),
+              const SizedBox(height: 24),
+              Text(
+                "Login Successfully!",
+                style: TextStyle(
+                  fontSize: 28,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFF1E293B),
+                ),
+              ),
+            ],
           ),
         ),
       );
