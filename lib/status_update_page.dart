@@ -6,33 +6,35 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
 
 class StatusUpdatePage extends StatefulWidget {
-  final Map<String, dynamic>? cargoData;
+  final Map<String, dynamic> containerData;
 
   const StatusUpdatePage({
     super.key,
-    this.cargoData,
+    required this.containerData,
   });
 
-  String get cargoId {
-    return cargoData?['cargo_id'] ?? cargoData?['id'] ?? '';
+  String get containerId {
+    return containerData['containerId'] ?? '';
   }
 
   String get containerNo {
-    return cargoData?['containerNo'] ?? 'CONT-${cargoData?['item_number'] ?? 'N/A'}';
+    return containerData['containerNumber'] ?? 'N/A';
   }
 
   String get time {
-    return cargoData?['confirmed_at'] != null 
-        ? _formatTime(cargoData!['confirmed_at'] as Timestamp)
-        : '';
+    return containerData['confirmed_at'] != null 
+        ? _formatTime(containerData['confirmed_at'] as Timestamp)
+        : containerData['created_at'] != null
+            ? _formatTime(containerData['created_at'] as Timestamp)
+            : '';
   }
 
   String get pickup {
-    return cargoData?['origin'] ?? cargoData?['pickupLocation'] ?? 'Port Terminal';
+    return containerData['location'] ?? 'Port Terminal';
   }
 
   String get destination {
-    return cargoData?['destination'] ?? 'Delivery Point';
+    return containerData['destination'] ?? 'Delivery Point';
   }
 
   String _formatTime(Timestamp timestamp) {
@@ -54,7 +56,6 @@ class _StatusUpdatePageState extends State<StatusUpdatePage> {
   bool _isSubmitting = false;
   DateTime? _selectedDateTime;
   
-  // New variables for CargoDelivery data
   Map<String, dynamic>? _deliveryData;
   bool _isLoading = true;
 
@@ -74,14 +75,14 @@ class _StatusUpdatePageState extends State<StatusUpdatePage> {
     _loadDeliveryData();
   }
 
-  // Load delivery data from CargoDelivery collection
+  // Load delivery data from ContainerDelivery collection
   Future<void> _loadDeliveryData() async {
     try {
-      final cargoId = widget.cargoId;
-      if (cargoId.isNotEmpty) {
+      final containerId = widget.containerId;
+      if (containerId.isNotEmpty) {
         QuerySnapshot deliveryQuery = await _firestore
-            .collection('CargoDelivery')
-            .where('cargo_id', isEqualTo: cargoId)
+            .collection('ContainerDelivery')
+            .where('containerId', isEqualTo: containerId)
             .limit(1)
             .get();
         
@@ -111,15 +112,15 @@ class _StatusUpdatePageState extends State<StatusUpdatePage> {
     }
   }
 
-  String get _cargoId {
-    return widget.cargoId;
+  String get _containerId {
+    return widget.containerId;
   }
 
   String get _containerNo {
     return widget.containerNo;
   }
 
-  // Get status only from CargoDelivery
+  // Get status only from ContainerDelivery
   String get _status {
     return _deliveryData?['status'] ?? 'pending';
   }
@@ -265,15 +266,22 @@ class _StatusUpdatePageState extends State<StatusUpdatePage> {
         return;
       }
 
-      // Only update CargoDelivery, not Cargo
+      // Update both ContainerDelivery and Containers collections
       final deliveryQuery = await _firestore
-          .collection('CargoDelivery')
-          .where('cargo_id', isEqualTo: _cargoId)
+          .collection('ContainerDelivery')
+          .where('containerId', isEqualTo: _containerId)
           .limit(1)
           .get();
 
+      final containerQuery = await _firestore
+          .collection('Containers')
+          .where('containerId', isEqualTo: _containerId)
+          .limit(1)
+          .get();
+
+      final newStatus = selectedStatus.toLowerCase().replaceAll(' ', '-');
       final updateData = {
-        'status': selectedStatus.toLowerCase().replaceAll(' ', '-'),
+        'status': newStatus,
         'remarks': notesController.text.isNotEmpty ? notesController.text : 'Status updated to $selectedStatus',
         'confirmed_at': Timestamp.now(),
         'updated_at': Timestamp.now(),
@@ -281,16 +289,25 @@ class _StatusUpdatePageState extends State<StatusUpdatePage> {
           'estimated_arrival': Timestamp.fromDate(_selectedDateTime!),
       };
 
+      // Update ContainerDelivery collection
       if (deliveryQuery.docs.isNotEmpty) {
         // Update existing delivery record
         await deliveryQuery.docs.first.reference.update(updateData);
       } else {
         // Create new delivery record if it doesn't exist
-        await _firestore.collection('CargoDelivery').add({
-          'cargo_id': _cargoId,
+        await _firestore.collection('ContainerDelivery').add({
+          'containerId': _containerId,
           'courier_id': user.uid,
           ...updateData,
           'created_at': Timestamp.now(),
+        });
+      }
+
+      // Update Containers collection status
+      if (containerQuery.docs.isNotEmpty) {
+        await containerQuery.docs.first.reference.update({
+          'status': newStatus,
+          'updated_at': Timestamp.now(),
         });
       }
 
@@ -301,9 +318,9 @@ class _StatusUpdatePageState extends State<StatusUpdatePage> {
         'message': 'Status updated for Container $_containerNo: $selectedStatus',
         'timestamp': Timestamp.now(),
         'read': false,
-        'cargoId': _cargoId,
-        'containerNo': _containerNo,
-        'newStatus': selectedStatus.toLowerCase().replaceAll(' ', '-'),
+        'containerId': _containerId,
+        'containerNumber': _containerNo,
+        'newStatus': newStatus,
       });
 
       if (mounted) {

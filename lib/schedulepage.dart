@@ -11,6 +11,28 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'order_history_page.dart';
 
+const String DECLARED_ORIGIN = "Don Carlos A. Gothong Port Centre, Quezon Boulevard, Pier 4, Cebu City.";
+
+// Add the AutoRefreshMixin if it's missing
+mixin AutoRefreshMixin<T extends StatefulWidget> on State<T> {
+  void setupContainerListener(Function callback) {
+    // Implement your real-time listener here
+    FirebaseFirestore.instance
+        .collection('Containers')
+        .snapshots()
+        .listen((_) => callback());
+  }
+
+  void setupDeliveryListener(String userId, Function callback) {
+    // Implement your real-time delivery listener here
+    FirebaseFirestore.instance
+        .collection('ContainerDelivery')
+        .where('courier_id', isEqualTo: userId)
+        .snapshots()
+        .listen((_) => callback());
+  }
+}
+
 class SchedulePage extends StatefulWidget {
   const SchedulePage({super.key});
 
@@ -26,14 +48,14 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
   String _licenseNumber = '';
   bool _isLoading = true;
 
-  List<Map<String, dynamic>> _availableCargos = [];
+  List<Map<String, dynamic>> _availableContainers = [];
   List<Map<String, dynamic>> _inProgressDeliveries = [];
 
   @override
   void initState() {
     super.initState();
     _loadUserData();
-    _loadCargoData();
+    _loadContainerData();
     _setupRealTimeListeners();
   }
 
@@ -54,20 +76,20 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
   }
 
   void _setupRealTimeListeners() {
-    setupCargoListener(_loadAvailableCargos);
+    setupContainerListener(_loadAvailableContainers);
     if (_auth.currentUser != null) {
       setupDeliveryListener(_auth.currentUser!.uid, _loadInProgressDeliveries);
     }
   }
 
-  Future<void> _loadCargoData() async {
+  Future<void> _loadContainerData() async {
     try {
       await Future.wait([
-        _loadAvailableCargos(),
+        _loadAvailableContainers(),
         _loadInProgressDeliveries(),
       ]);
     } catch (e) {
-      print('Error loading cargo data: $e');
+      print('Error loading container data: $e');
     } finally {
       setState(() {
         _isLoading = false;
@@ -75,62 +97,110 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
     }
   }
 
-  Future<void> _loadAvailableCargos() async {
+  Future<void> _loadAvailableContainers() async {
   try {
-    QuerySnapshot cargoSnapshot = await _firestore
-        .collection('Cargo')
-        .orderBy('created_at', descending: true)
+    print('=== DEBUG SchedulePage: Loading available containers ===');
+    
+    QuerySnapshot containerSnapshot = await _firestore
+        .collection('Containers')
+        .orderBy('dateCreated', descending: true)
         .get();
+
+    print('DEBUG: Found ${containerSnapshot.docs.length} total containers');
+    
+    // Print all containers for debugging
+    for (var doc in containerSnapshot.docs) {
+      var containerData = doc.data() as Map<String, dynamic>;
+      print('DEBUG Container: ${doc.id}');
+      print('  - ContainerNumber: ${containerData['containerNumber']}');
+      print('  - AllocationStatus: ${containerData['allocationStatus']}');
+      print('  - Has allocationStatus field: ${containerData.containsKey('allocationStatus')}');
+    }
 
     QuerySnapshot deliverySnapshot = await _firestore
-        .collection('CargoDelivery')
+        .collection('ContainerDelivery')
         .get();
 
-    Set<String> assignedCargoIds = {};
-    Map<String, String> cargoDeliveryStatus = {};
+    print('DEBUG: Found ${deliverySnapshot.docs.length} delivery records');
+    
+    Set<String> assignedContainerIds = {};
+    Map<String, String> containerDeliveryStatus = {};
     
     for (var doc in deliverySnapshot.docs) {
       var deliveryData = doc.data() as Map<String, dynamic>;
-      if (deliveryData['cargo_id'] != null) {
-        String cargoId = deliveryData['cargo_id'].toString();
-        assignedCargoIds.add(cargoId);
-        cargoDeliveryStatus[cargoId] = deliveryData['status']?.toString().toLowerCase() ?? '';
+      // Check both possible field names
+      String? containerId = deliveryData['containerId'] ?? deliveryData['container_id'];
+      if (containerId != null) {
+        assignedContainerIds.add(containerId.toString());
+        containerDeliveryStatus[containerId.toString()] = deliveryData['status']?.toString().toLowerCase() ?? '';
+        print('DEBUG Delivery: Container $containerId has status: ${deliveryData['status']}');
       }
     }
 
-    List<Map<String, dynamic>> availableCargos = [];
-    for (var doc in cargoSnapshot.docs) {
-      var cargoData = doc.data() as Map<String, dynamic>;
-      String cargoId = doc.id;
-      String deliveryStatus = cargoDeliveryStatus[cargoId] ?? '';
+    List<Map<String, dynamic>> availableContainers = [];
+    for (var doc in containerSnapshot.docs) {
+      var containerData = doc.data() as Map<String, dynamic>;
+      String containerId = doc.id;
+      
+      // Get allocation status
+      String allocationStatus = (containerData['allocationStatus']?.toString().toLowerCase() ?? '').trim();
+      String deliveryStatus = containerDeliveryStatus[containerId] ?? '';
 
-      // Only include cargos that are not assigned OR have cancelled status
-      if (!assignedCargoIds.contains(cargoId) || deliveryStatus == 'cancelled') {
+      print('DEBUG Processing: $containerId');
+      print('  - Allocation status: "$allocationStatus"');
+      print('  - Delivery status: "$deliveryStatus"');
+      print('  - Has delivery record: ${assignedContainerIds.contains(containerId)}');
+
+      // Only include containers that are RELEASED and not assigned OR have cancelled status
+      bool shouldInclude = false;
+      if (allocationStatus == 'released') {
+        if (!assignedContainerIds.contains(containerId) || 
+            deliveryStatus == 'cancelled' || 
+            deliveryStatus == '') {
+          shouldInclude = true;
+        }
+      }
+
+      print('  - Should include: $shouldInclude');
+
+      if (shouldInclude) {
         Map<String, dynamic> combinedData = {
-          'cargo_id': cargoId,
-          'containerNo': 'CONT-${cargoData['item_number']?.toString() ?? 'N/A'}',
-          'status': deliveryStatus.isNotEmpty ? deliveryStatus : 'pending', // Use delivery status
-          'pickupLocation': cargoData['origin']?.toString() ?? 'Port Terminal',
-          'destination': cargoData['destination']?.toString() ?? 'Delivery Point',
-          'created_at': cargoData['created_at'],
-          'description': cargoData['description']?.toString() ?? 'N/A',
-          'weight': cargoData['weight'] ?? 0.0,
-          'value': cargoData['value'] ?? 0.0,
-          'hs_code': cargoData['hs_code']?.toString() ?? 'N/A',
-          'quantity': cargoData['quantity'] ?? 0,
-          'item_number': cargoData['item_number'] ?? 0,
-          'additional_info': cargoData['additional_info']?.toString() ?? '',
-          'submanifest_id': cargoData['submanifest_id']?.toString() ?? '',
+          'containerId': containerId,
+          'containerNumber': containerData['containerNumber']?.toString() ?? 'N/A',
+          'sealNumber': containerData['sealNumber']?.toString() ?? 'N/A',
+          'billOfLading': containerData['billOfLading']?.toString() ?? 'N/A',
+          'consigneeName': containerData['consignedName']?.toString() ?? 'N/A',
+          'consigneeAddress': containerData['consignedAddress']?.toString() ?? 'N/A',
+          'consignorName': containerData['consignorName']?.toString() ?? 'N/A',
+          'consignorAddress': containerData['consignorAddress']?.toString() ?? 'N/A',
+          'priority': containerData['priority']?.toString() ?? 'normal',
+          'deliveredBy': containerData['deliveredBy']?.toString() ?? '',
+          'voyageId': containerData['voyageId']?.toString() ?? '',
+          'location': DECLARED_ORIGIN,
+          'destination': containerData['destination']?.toString() ?? 'Delivery Point',
+          'cargoType': containerData['cargoType']?.toString() ?? 'General',
+          'status': deliveryStatus.isNotEmpty ? deliveryStatus : 'pending',
+          'allocationStatus': allocationStatus,
+          'created_at': containerData['dateCreated'],
+          'is_cancelled': deliveryStatus == 'cancelled',
         };
-        availableCargos.add(combinedData);
+        availableContainers.add(combinedData);
+        print('  ✓ ADDED container: $containerId');
+      } else {
+        print('  ✗ SKIPPED container: $containerId');
       }
     }
 
     setState(() {
-      _availableCargos = availableCargos;
+      _availableContainers = availableContainers;
     });
+    
+    print('=== DEBUG SchedulePage: Found ${_availableContainers.length} available containers ===');
   } catch (e) {
-    print('Error loading available cargos: $e');
+    print('Error loading available containers: $e');
+    setState(() {
+      _availableContainers = [];
+    });
   }
 }
 
@@ -139,62 +209,70 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
       final user = _auth.currentUser;
       if (user == null) return;
 
-    QuerySnapshot deliverySnapshot = await _firestore
-        .collection('CargoDelivery')
-        .where('courier_id', isEqualTo: user.uid)
-        .get();
+      QuerySnapshot deliverySnapshot = await _firestore
+          .collection('ContainerDelivery')
+          .where('courier_id', isEqualTo: user.uid)
+          .get();
 
-    List<Map<String, dynamic>> inProgressDeliveries = [];
-    
-    for (var doc in deliverySnapshot.docs) {
-      var deliveryData = doc.data() as Map<String, dynamic>;
-      String status = deliveryData['status']?.toString().toLowerCase() ?? '';
+      List<Map<String, dynamic>> inProgressDeliveries = [];
       
-      // Only include in-progress, in_transit, assigned, or delayed statuses
-      if (status == 'in-progress' || status == 'in_transit' || status == 'assigned' || status == 'delayed') {
-        try {
-          DocumentSnapshot cargoDoc = await _firestore
-              .collection('Cargo')
-              .doc(deliveryData['cargo_id'].toString())
-              .get();
+      for (var doc in deliverySnapshot.docs) {
+        var deliveryData = doc.data() as Map<String, dynamic>;
+        String status = deliveryData['status']?.toString().toLowerCase() ?? '';
+        
+        // EXCLUDE delivered/confirmed containers - they should disappear from this page
+        if (status.isNotEmpty && status != 'delivered' && status != 'confirmed') {
+          try {
+            String? containerId = deliveryData['containerId'] ?? deliveryData['container_id'];
+            if (containerId == null) continue;
 
-          if (cargoDoc.exists) {
-            var cargoData = cargoDoc.data() as Map<String, dynamic>;
-            
-            Map<String, dynamic> combinedData = {
-              'delivery_id': doc.id,
-              'cargo_id': deliveryData['cargo_id'],
-              'containerNo': 'CONT-${cargoData['item_number'] ?? 'N/A'}',
-              'status': deliveryData['status'] ?? 'in-progress', // Status from CargoDelivery
-              'pickupLocation': cargoData['origin'] ?? 'Port Terminal',
-              'destination': cargoData['destination'] ?? 'Delivery Point',
-              'confirmed_at': deliveryData['confirmed_at'],
-              'courier_id': deliveryData['courier_id'],
-              'description': cargoData['description'] ?? 'N/A',
-              'weight': cargoData['weight'] ?? 0.0,
-              'value': cargoData['value'] ?? 0.0,
-              'hs_code': cargoData['hs_code'] ?? 'N/A',
-              'quantity': cargoData['quantity'] ?? 0,
-              'item_number': cargoData['item_number'] ?? 0,
-              'proof_image': deliveryData['proof_image'],
-              'confirmed_by': deliveryData['confirmed_by'],
-              'remarks': deliveryData['remarks'],
-            };
-            inProgressDeliveries.add(combinedData);
+            DocumentSnapshot containerDoc = await _firestore
+                .collection('Containers')
+                .doc(containerId.toString())
+                .get();
+
+            if (containerDoc.exists) {
+              var containerData = containerDoc.data() as Map<String, dynamic>;
+              
+              Map<String, dynamic> combinedData = {
+                'delivery_id': doc.id,
+                'containerId': containerId,
+                'containerNumber': containerData['containerNumber']?.toString() ?? 'N/A',
+                'sealNumber': containerData['sealNumber']?.toString() ?? 'N/A',
+                'billOfLading': containerData['billOfLading']?.toString() ?? 'N/A',
+                'consigneeName': containerData['consignedName']?.toString() ?? 'N/A',
+                'consigneeAddress': containerData['consignedAddress']?.toString() ?? 'N/A',
+                'consignorName': containerData['consignorName']?.toString() ?? 'N/A',
+                'consignorAddress': containerData['consignorAddress']?.toString() ?? 'N/A',
+                'priority': containerData['priority']?.toString() ?? 'normal',
+                'deliveredBy': containerData['deliveredBy']?.toString() ?? '',
+                'voyageId': containerData['voyageId']?.toString() ?? '',
+                'location': DECLARED_ORIGIN,
+                'destination': containerData['destination']?.toString() ?? 'Delivery Point',
+                'cargoType': containerData['cargoType']?.toString() ?? 'General',
+                'status': deliveryData['status'] ?? 'pending',
+                'confirmed_at': deliveryData['confirmed_at'],
+                'courier_id': deliveryData['courier_id'],
+                'proof_image': deliveryData['proof_image'],
+                'confirmed_by': deliveryData['confirmed_by'],
+                'remarks': deliveryData['remarks'],
+              };
+              inProgressDeliveries.add(combinedData);
+            }
+          } catch (e) {
+            print('Error loading container details for delivery: $e');
           }
-        } catch (e) {
-          print('Error loading cargo details for delivery: $e');
         }
       }
-    }
 
-    setState(() {
-      _inProgressDeliveries = inProgressDeliveries;
-    });
-  } catch (e) {
-    print('Error loading in-progress deliveries: $e');
+      setState(() {
+        _inProgressDeliveries = inProgressDeliveries;
+      });
+    } catch (e) {
+      print('Error loading in-progress deliveries: $e');
+    }
   }
-}
+
   Future<void> _processUserData(Map<String, dynamic> data, String role) async {
     Uint8List? decodedImage;
     
@@ -230,6 +308,8 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
         return Icons.pending_rounded;
       case 'assigned':
         return Icons.assignment_turned_in_rounded;
+      case 'accepted': // NEW: Added accepted status
+        return Icons.assignment_ind_rounded;
       case 'cancelled':
         return Icons.cancel_rounded;
       default:
@@ -253,6 +333,8 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
       case 'pending':
         return const Color(0xFF64748B);
       case 'assigned':
+        return const Color(0xFF3B82F6);
+      case 'accepted': // NEW: Added accepted status (blue color)
         return const Color(0xFF3B82F6);
       case 'cancelled':
         return const Color(0xFFEF4444);
@@ -290,15 +372,15 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
     }
   }
 
-  void _handleCargoTap(Map<String, dynamic> cargoData) {
-    final status = cargoData['status']?.toString().toLowerCase() ?? 'pending';
+  void _handleContainerTap(Map<String, dynamic> containerData) {
+    final status = containerData['status']?.toString().toLowerCase() ?? 'pending';
     
     if (status == 'in-progress' || status == 'in_transit') {
       Navigator.push(
         context,
         MaterialPageRoute(
           builder: (context) => LiveLocationPage(
-            cargoData: cargoData,
+            containerData: containerData,
           ),
         ),
       );
@@ -307,7 +389,7 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
         context,
         MaterialPageRoute(
           builder: (context) => StatusUpdatePage(
-            cargoData: cargoData,
+            containerData: containerData,
           ),
         ),
       );
@@ -316,8 +398,8 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
         context,
         MaterialPageRoute(
           builder: (context) => ContainerDetailsPage(
-            containerData: cargoData,
-            isAvailable: true,
+            containerData: containerData,
+            isAvailable: status == 'accepted' || status == 'pending' || status == 'scheduled',
           ),
         ),
       );
@@ -430,25 +512,24 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
                     ),
                   ),
 
-                  if (_availableCargos.isNotEmpty)
-                    _buildCargoSection(
-                      "Available Cargos",
-                      _availableCargos,
+                  if (_availableContainers.isNotEmpty)
+                    _buildContainerSection(
+                      "Available Containers",
+                      _availableContainers,
                       true,
                     ),
 
                   const SizedBox(height: 16),
 
                   if (_inProgressDeliveries.isNotEmpty)
-                    _buildCargoSection(
+                    _buildContainerSection(
                       "Your Active Deliveries",
                       _inProgressDeliveries,
                       false,
                     ),
 
-                  if (_availableCargos.isEmpty && _inProgressDeliveries.isEmpty)
-                    _buildNoCargo(),
-
+                  if (_availableContainers.isEmpty && _inProgressDeliveries.isEmpty)
+                    _buildNoContainer(),
                   const SizedBox(height: 100),
                 ],
               ),
@@ -457,7 +538,7 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
     );
   }
 
-  Widget _buildCargoSection(String title, List<Map<String, dynamic>> cargos, bool isAvailable) {
+  Widget _buildContainerSection(String title, List<Map<String, dynamic>> containers, bool isAvailable) {
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 16),
       padding: const EdgeInsets.all(20),
@@ -485,7 +566,7 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: Text(
-                  cargos.length.toString(),
+                  containers.length.toString(),
                   style: const TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w600,
@@ -497,14 +578,14 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
           ),
           const SizedBox(height: 8),
           Text(
-            isAvailable ? "Cargos available for delivery" : "Deliveries in progress",
+            isAvailable ? "Containers available for delivery" : "Deliveries in progress",
             style: const TextStyle(fontSize: 14, color: Color(0xFF64748B)),
           ),
           const SizedBox(height: 20),
-          ...cargos.map((cargo) {
+          ...containers.map((container) {
             return Column(
               children: [
-                _buildCargoCard(cargo, isAvailable),
+                _buildContainerCard(container, isAvailable),
                 const SizedBox(height: 16),
               ],
             );
@@ -514,16 +595,16 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
     );
   }
 
-  Widget _buildCargoCard(Map<String, dynamic> cargo, bool isAvailable) {
-    final containerNo = cargo['containerNo'] ?? 'CONT-${cargo['item_number'] ?? 'N/A'}';
-    final pickup = cargo['pickupLocation'] ?? cargo['origin'] ?? 'Port Terminal';
-    final destination = cargo['destination'] ?? 'Delivery Point';
-    final description = cargo['description'] ?? 'No description';
-    final status = cargo['status']?.toString().toLowerCase() ?? 'pending';
-    final time = cargo['created_at'] != null 
-        ? _formatDate(cargo['created_at'] as Timestamp)
-        : cargo['confirmed_at'] != null
-            ? _formatDate(cargo['confirmed_at'] as Timestamp)
+  Widget _buildContainerCard(Map<String, dynamic> container, bool isAvailable) {
+    final containerNo = container['containerNumber'] ?? 'N/A';
+    final location = container['location'] ?? 'Port Terminal';
+    final destination = container['destination'] ?? 'Delivery Point';
+    final cargoType = container['cargoType'] ?? 'General';
+    final status = container['status']?.toString().toLowerCase() ?? 'pending';
+    final time = container['created_at'] != null 
+        ? _formatDate(container['created_at'] as Timestamp)
+        : container['confirmed_at'] != null
+            ? _formatDate(container['confirmed_at'] as Timestamp)
             : 'No time';
 
     return Container(
@@ -577,11 +658,11 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
           ),
           const SizedBox(height: 4),
           Text(
-            description,
+            'Cargo Type: $cargoType',
             style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
           ),
           Text(
-            'From: $pickup',
+            'From: $location',
             style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
           ),
           Text(
@@ -599,7 +680,7 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                     padding: const EdgeInsets.symmetric(vertical: 8),
                   ),
-                  onPressed: () => _handleCargoTap(cargo),
+                  onPressed: () => _handleContainerTap(container),
                   child: const Text("View Details", style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
                 ),
               ),
@@ -610,7 +691,7 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
     );
   }
 
-  Widget _buildNoCargo() {
+  Widget _buildNoContainer() {
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 16),
       padding: const EdgeInsets.all(20),
@@ -626,13 +707,13 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
           Icon(Icons.local_shipping, size: 64, color: Color(0xFF64748B)),
           SizedBox(height: 16),
           Text(
-            'No cargo items found',
+            'No container items found',
             style: TextStyle(fontSize: 16, color: Color(0xFF64748B)),
             textAlign: TextAlign.center,
           ),
           SizedBox(height: 8),
           Text(
-            'Cargo items will appear here when added to the system',
+            'Container items will appear here when added to the system',
             style: TextStyle(fontSize: 12, color: Color(0xFF94A3B8)),
             textAlign: TextAlign.center,
           ),
@@ -641,7 +722,7 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
     );
   }
 
-    Widget _buildBottomNavigation(BuildContext context, int currentIndex) {
+  Widget _buildBottomNavigation(BuildContext context, int currentIndex) {
     return Container(
       decoration: BoxDecoration(
         color: Colors.white,
@@ -670,10 +751,7 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
               );
               break;
             case 1:
-              Navigator.pushReplacement(
-                context,
-                MaterialPageRoute(builder: (context) => const SchedulePage()),
-              );
+              // Already on SchedulePage, do nothing
               break;
             case 2:
               Navigator.pushReplacement(
@@ -696,11 +774,11 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
             label: 'Home',
           ),
           BottomNavigationBarItem(
-            icon: Icon(Icons.schedule_outlined),
-            activeIcon: Icon(Icons.schedule),
-            label: 'Schedule',
-          ),
-          BottomNavigationBarItem(
+          icon: Icon(Icons.format_list_bulleted_outlined),
+          activeIcon: Icon(Icons.format_list_bulleted),
+          label: 'Tasks',
+        ),
+                    BottomNavigationBarItem(
             icon: Icon(Icons.map_outlined),
             activeIcon: Icon(Icons.map),
             label: 'Live Map',

@@ -309,10 +309,10 @@ class _SettingsPageState extends State<SettingsPage> {
             label: 'Home',
           ),
           BottomNavigationBarItem(
-            icon: Icon(Icons.schedule_outlined),
-            activeIcon: Icon(Icons.schedule),
-            label: 'Schedule',
-          ),
+          icon: Icon(Icons.format_list_bulleted_outlined),
+          activeIcon: Icon(Icons.format_list_bulleted),
+          label: 'Tasks',
+        ),
           BottomNavigationBarItem(
             icon: Icon(Icons.map_outlined),
             activeIcon: Icon(Icons.map),

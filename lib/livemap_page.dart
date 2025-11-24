@@ -11,15 +11,15 @@ import 'osmservice.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 class LiveMapPage extends StatefulWidget {
-  final String? cargoId;
-  final String? pickup;
+  final String? containerId;
   final String? destination;
+  final String? location;
 
   const LiveMapPage({
     super.key,
-    this.cargoId,
-    this.pickup,
+    this.containerId,
     this.destination,
+    this.location,
   });
 
   @override
@@ -31,120 +31,164 @@ class _LiveMapPageState extends State<LiveMapPage> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseAuth _auth = FirebaseAuth.instance;
   
-  List<Map<String, dynamic>> _availableCargos = [];
+  List<Map<String, dynamic>> _availableContainers = [];
   List<Map<String, dynamic>> _acceptedDeliveries = [];
-  Map<String, dynamic>? _selectedCargoDetails;
+  Map<String, dynamic>? _selectedContainerDetails;
   
-  bool _showCargoDetails = false;
-  bool _isLoadingCargo = false;
+  bool _showContainerDetails = false;
+  bool _isLoadingContainer = false;
   bool _isLoadingRoutes = false;
   
   List<DeliveryRouteData> _deliveryRoutes = [];
-  late StreamSubscription<QuerySnapshot>? _cargoSubscription;
+  late StreamSubscription<QuerySnapshot>? _containerSubscription;
   late StreamSubscription<QuerySnapshot>? _deliverySubscription;
 
-  // Courier position along the route (1km from pickup)
+  // Courier position along the route (1km from pickup) OR live courier position from ContainerDelivery if present
   Map<String, LatLng> _courierRoutePositions = {};
+
+  // Declared origin constant
+  static const String DECLARED_ORIGIN = "Don Carlos A. Gothong Port Centre, Quezon Boulevard, Pier 4, Cebu City.";
+
+  // Ensure we center on Cebu once after initial loading completes
+  bool _centeredAfterLoad = false;
 
   @override
   void initState() {
     super.initState();
-    _loadAvailableAndAcceptedCargos();
+    // Set initial position to Cebu immediately
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        try {
+          _mapController.move(const LatLng(10.3157, 123.8854), 11.0);
+        } catch (e) {
+          // Map controller may not be ready yet; it's safe to ignore here
+          print('Initial map move error: $e');
+        }
+      }
+    });
+    _loadAvailableAndAcceptedContainers();
     _setupRealtimeListeners();
   }
 
-  Future<void> _loadAvailableAndAcceptedCargos() async {
+  Future<void> _loadAvailableAndAcceptedContainers() async {
     setState(() {
-      _isLoadingCargo = true;
+      _isLoadingContainer = true;
       _isLoadingRoutes = true;
     });
 
     try {
       final user = _auth.currentUser;
-      if (user == null) return;
+      if (user == null) {
+        setState(() {
+          _isLoadingContainer = false;
+          _isLoadingRoutes = false;
+        });
+        return;
+      }
 
-      // Load ALL cargos (no status filter)
-      QuerySnapshot cargoSnapshot = await _firestore
-          .collection('Cargo')
+      // Load ALL containers (no status filter)
+      QuerySnapshot containerSnapshot = await _firestore
+          .collection('Containers')
           .get();
 
-      QuerySnapshot deliverySnapshot = await _firestore
-          .collection('CargoDelivery')
+      // Load ALL container deliveries (we need this to determine assignments & tracking info)
+      QuerySnapshot containerDeliverySnapshot = await _firestore
+          .collection('ContainerDelivery')
           .get();
 
-      Set<String> assignedCargoIds = {};
-      Map<String, String> cargoDeliveryStatus = {};
-      Map<String, String> cargoDeliveryIds = {}; // Store delivery IDs
-      Map<String, String> cargoDeliveryCouriers = {}; // Store which courier accepted the cargo
+      Set<String> assignedContainerIds = {};
+      Map<String, String> containerDeliveryStatus = {};
+      Map<String, String> containerDeliveryIds = {}; // Store delivery IDs
+      Map<String, String> containerDeliveryCouriers = {}; // Store which courier accepted the container
+      Map<String, String> containerDeliveredBy = {}; // Store deliveredBy from ContainerDelivery
       
-      for (var doc in deliverySnapshot.docs) {
+      // Build lookup maps from ContainerDelivery (this ensures tracking & statuses come from ContainerDelivery)
+      for (var doc in containerDeliverySnapshot.docs) {
         var deliveryData = doc.data() as Map<String, dynamic>;
         
-        // FIXED: Handle both String and int types for cargo_id
-        final cargoId = _getCargoId(deliveryData['cargo_id']);
-        if (cargoId.isNotEmpty) {
-          assignedCargoIds.add(cargoId);
-          // Store the status from CargoDelivery
-          cargoDeliveryStatus[cargoId] = 
-              deliveryData['status']?.toString() ?? 'pending';
-          // Store delivery ID for reference
-          cargoDeliveryIds[cargoId] = doc.id;
-          // Store courier ID
-          cargoDeliveryCouriers[cargoId] = deliveryData['courier_id']?.toString() ?? '';
+        final containerId = _getContainerId(deliveryData['containerId']);
+        if (containerId.isNotEmpty) {
+          assignedContainerIds.add(containerId);
+          containerDeliveryStatus[containerId] = deliveryData['status']?.toString() ?? 'pending';
+          containerDeliveryIds[containerId] = doc.id;
+          containerDeliveryCouriers[containerId] = deliveryData['courier_id']?.toString() ?? '';
+          containerDeliveredBy[containerId] = deliveryData['deliveredBy']?.toString() ?? '';
         }
       }
 
-      List<Map<String, dynamic>> availableCargos = [];
+      List<Map<String, dynamic>> availableContainers = [];
       
-      for (var doc in cargoSnapshot.docs) {
-        var cargoData = doc.data() as Map<String, dynamic>;
-        String cargoId = doc.id;
+      for (var doc in containerSnapshot.docs) {
+        var containerData = doc.data() as Map<String, dynamic>;
+        String containerId = doc.id;
         
-        // Determine status: if cargo has a delivery record, use that status, otherwise it's available
-        String status = 'available'; // Default status for available cargos
-        if (cargoDeliveryStatus.containsKey(cargoId)) {
-          status = cargoDeliveryStatus[cargoId]!;
+        // Determine status: prefer status from ContainerDelivery, otherwise default to available
+        String status = 'available';
+        if (containerDeliveryStatus.containsKey(containerId)) {
+          status = containerDeliveryStatus[containerId]!;
         }
 
-        // Skip delivered cargos
+        // Skip delivered containers
         if (status == 'delivered') {
           continue;
         }
 
-        // Skip cargos accepted by other couriers
-        if (cargoDeliveryCouriers.containsKey(cargoId) && 
-            cargoDeliveryCouriers[cargoId] != user.uid && 
-            cargoDeliveryCouriers[cargoId]!.isNotEmpty) {
+        // Skip containers accepted by other couriers (show only those not taken or taken by current user)
+        if (containerDeliveryCouriers.containsKey(containerId) && 
+            containerDeliveryCouriers[containerId] != user.uid && 
+            containerDeliveryCouriers[containerId]!.isNotEmpty) {
           continue;
         }
         
-        // Get coordinates for the DESTINATION of all cargos
-        final destCoords = await _getCoordinatesForAddress(cargoData['destination'] ?? 'Manila');
+        // Get courier name - FIRST check ContainerDelivery, then fallback to Containers
+        String deliveredByName = 'Not Assigned';
         
-        Map<String, dynamic> cargo = {
-          'cargo_id': cargoId,
-          'containerNo': 'CONT-${cargoData['item_number'] ?? 'N/A'}',
-          'destination': cargoData['destination'] ?? 'Unknown',
-          'origin': cargoData['origin'] ?? 'Unknown',
-          'description': cargoData['description'] ?? 'N/A',
-          'weight': cargoData['weight'] ?? 0.0,
-          'value': cargoData['value'] ?? 0.0,
-          'status': status, // Use status from CargoDelivery or 'available'
-          'item_number': cargoData['item_number'],
-          'hs_code': cargoData['hs_code'],
-          'quantity': cargoData['quantity'],
+        if (containerDeliveryCouriers.containsKey(containerId) && 
+            containerDeliveryCouriers[containerId]!.isNotEmpty) {
+          deliveredByName = await _getCourierName(containerDeliveryCouriers[containerId]!);
+        }
+        else if (containerDeliveredBy.containsKey(containerId) && 
+                 containerDeliveredBy[containerId]!.isNotEmpty) {
+          deliveredByName = await _getCourierName(containerDeliveredBy[containerId]!);
+        }
+        else if (containerData['deliveredBy'] != null && containerData['deliveredBy'].isNotEmpty) {
+          deliveredByName = await _getCourierName(containerData['deliveredBy']);
+        }
+        
+        // Get coordinates for the DESTINATION of all containers (fallback to Containers.consigneeAddress)
+        final destCoords = await _getCoordinatesForAddress(containerData['consigneeAddress'] ?? 'Cebu City');
+        
+        Map<String, dynamic> container = {
+          'containerId': containerId,
+          'containerNo': containerData['containerNumber'] ?? 'N/A',
+          'destination': containerData['consigneeAddress'] ?? 'Unknown',
+          'origin': DECLARED_ORIGIN, // Always use declared origin
+          'description': containerData['cargoType'] ?? 'N/A',
+          'weight': 0.0, // Not available in Containers collection
+          'value': 0.0, // Not available in Containers collection
+          'status': status, // Use status from ContainerDelivery or 'available'
+          'cargoType': containerData['cargoType'],
+          'consigneeName': containerData['consigneeName'],
+          'consigneeAddress': containerData['consigneeAddress'],
+          'deliveredBy': deliveredByName,
+          'sealNumber': containerData['sealNumber'],
+          'voyageId': containerData['voyageId'],
+          'priority': containerData['priority'],
           'destination_coords': destCoords, // Store DESTINATION coordinates for mapping
-          // Add delivery_id if this cargo has been accepted
-          if (cargoDeliveryIds.containsKey(cargoId))
-            'delivery_id': cargoDeliveryIds[cargoId],
-          ...cargoData,
+          // Add delivery_id if this container has been accepted
+          if (containerDeliveryIds.containsKey(containerId))
+            'delivery_id': containerDeliveryIds[containerId],
+          // Add courier_id for reference
+          if (containerDeliveryCouriers.containsKey(containerId))
+            'courier_id': containerDeliveryCouriers[containerId],
+          ...containerData,
         };
-        availableCargos.add(cargo);
+        availableContainers.add(container);
       }
 
-      // Load accepted deliveries (only active ones for routes)
+      // Load accepted deliveries from ContainerDelivery (these are authoritative for deliveries accepted by couriers)
       QuerySnapshot acceptedSnapshot = await _firestore
-          .collection('CargoDelivery')
+          .collection('ContainerDelivery')
           .where('courier_id', isEqualTo: user.uid)
           .get();
 
@@ -155,115 +199,218 @@ class _LiveMapPageState extends State<LiveMapPage> {
         var deliveryData = doc.data() as Map<String, dynamic>;
         String status = deliveryData['status']?.toString() ?? 'pending';
         
-        // Skip cancelled AND delivered deliveries for routes
+        // Skip cancelled AND delivered deliveries for route drawing/tracking
         if (status == 'cancelled' || status == 'delivered') continue;
         
-        // FIXED: Handle both String and int types for cargo_id
-        final cargoId = _getCargoId(deliveryData['cargo_id']);
-        if (cargoId.isEmpty) continue;
+        // Use the containerId field from ContainerDelivery
+        final containerId = _getContainerId(deliveryData['containerId']);
+        if (containerId.isEmpty) continue;
         
-        DocumentSnapshot cargoDoc = await _firestore
-            .collection('Cargo')
-            .doc(cargoId)
+        DocumentSnapshot containerDoc = await _firestore
+            .collection('Containers')
+            .doc(containerId)
             .get();
         
-        if (cargoDoc.exists) {
-          var cargoData = cargoDoc.data() as Map<String, dynamic>;
-          Map<String, dynamic> delivery = {
-            'delivery_id': doc.id,
-            'cargo_id': cargoId,
-            'containerNo': 'CONT-${cargoData['item_number'] ?? 'N/A'}',
-            'destination': cargoData['destination'] ?? 'Unknown',
-            'origin': cargoData['origin'] ?? 'Unknown',
-            'status': status,
-            'description': cargoData['description'] ?? 'N/A',
-            'weight': cargoData['weight'] ?? 0.0,
-            'value': cargoData['value'] ?? 0.0,
-            'item_number': cargoData['item_number'],
-            'hs_code': cargoData['hs_code'],
-            'quantity': cargoData['quantity'],
-            ...cargoData,
-          };
-          acceptedDeliveries.add(delivery);
-          
-          // Get coordinates using enhanced geocoding with validation
-          final originCoords = OSMService.validateAndCorrectCoordinates(
-            await _getCoordinatesForAddress(delivery['origin']), 
-            const LatLng(14.5995, 120.9842) // Manila as fallback
-          );
-          final destCoords = OSMService.validateAndCorrectCoordinates(
-            await _getCoordinatesForAddress(delivery['destination']),
-            const LatLng(14.5995, 120.9842) // Manila as fallback
-          );
+        if (!containerDoc.exists) continue;
+        var containerData = containerDoc.data() as Map<String, dynamic>;
+        
+        // Build delivery map (authoritative fields come from ContainerDelivery but augment with Containers)
+        Map<String, dynamic> delivery = {
+          'delivery_id': doc.id,
+          'containerId': containerId,
+          'containerNo': containerData['containerNumber'] ?? 'N/A',
+          'destination': containerData['consigneeAddress'] ?? 'Unknown',
+          'origin': DECLARED_ORIGIN,
+          'status': status,
+          'description': containerData['cargoType'] ?? 'N/A',
+          'weight': 0.0,
+          'value': 0.0,
+          'cargoType': containerData['cargoType'],
+          'consigneeName': containerData['consigneeName'],
+          'consigneeAddress': containerData['consigneeAddress'],
+          'deliveredBy': await _getCourierName(user.uid),
+          'sealNumber': containerData['sealNumber'],
+          'voyageId': containerData['voyageId'],
+          'priority': containerData['priority'],
+          'courier_id': user.uid,
+          ...containerData,
+          ...deliveryData, // ensure fields from ContainerDelivery (like live_coords) are present
+        };
 
-          // Get accurate route data with endpoint correction
-          var routeInfo = await OSMService.getRouteWithGeometry(originCoords, destCoords);
+        acceptedDeliveries.add(delivery);
 
-          // If route doesn't seem accurate, try alternative routing
-          if (!routeInfo['routeFound'] || routeInfo['routeAccuracy'] == 'low') {
-            final alternativeRoute = await OSMService.getAlternativeRoute(originCoords, destCoords);
-            if (alternativeRoute['routeFound']) {
-              routeInfo = alternativeRoute;
-            }
+        // Determine origin/destination coordinates, prefer coordinates present in ContainerDelivery doc
+        LatLng originCoords = const LatLng(10.3157, 123.8854); // default Cebu
+        LatLng destCoords = const LatLng(10.3157, 123.8854);
+
+        LatLng? originFromDelivery = _parseLatLngFromDeliveryData(deliveryData, [
+          'origin_coords',
+          'origin',
+          'pickup_location',
+          'pickup_coords',
+          'pickup_latlng',
+          'pickup_lat',
+        ]);
+        LatLng? destFromDelivery = _parseLatLngFromDeliveryData(deliveryData, [
+          'destination_coords',
+          'destination',
+          'dropoff_location',
+          'dropoff_coords',
+          'dropoff_latlng',
+          'dropoff_lat',
+        ]);
+
+        if (originFromDelivery != null) {
+          originCoords = OSMService.validateAndCorrectCoordinates(originFromDelivery, const LatLng(10.3157, 123.8854));
+        } else {
+          // fallback to declared origin constant (validated)
+          originCoords = OSMService.validateAndCorrectCoordinates(
+            await _getCoordinatesForAddress(DECLARED_ORIGIN),
+            const LatLng(10.3157, 123.8854),
+          );
+        }
+
+        if (destFromDelivery != null) {
+          destCoords = OSMService.validateAndCorrectCoordinates(destFromDelivery, const LatLng(10.3157, 123.8854));
+        } else {
+          // fallback to container consigneeAddress or geocoded
+          destCoords = OSMService.validateAndCorrectCoordinates(
+            await _getCoordinatesForAddress(delivery['destination'] ?? containerData['consigneeAddress'] ?? 'Cebu City'),
+            const LatLng(10.3157, 123.8854),
+          );
+        }
+
+        // Attempt to get route using OSMService (geometric route + metadata)
+        var routeInfo = await OSMService.getRouteWithGeometry(originCoords, destCoords);
+
+        // If route doesn't seem accurate, try alternative routing
+        if (!routeInfo['routeFound'] || routeInfo['routeAccuracy'] == 'low') {
+          final alternativeRoute = await OSMService.getAlternativeRoute(originCoords, destCoords);
+          if (alternativeRoute['routeFound']) {
+            routeInfo = alternativeRoute;
           }
-          
-          routes.add(DeliveryRouteData(
-            origin: originCoords,
-            destination: destCoords,
-            delivery: delivery,
-            routePoints: routeInfo['routePoints'] ?? [],
-            distance: routeInfo['distance'],
-            duration: routeInfo['duration'],
-            trafficStatus: routeInfo['trafficStatus'],
-            isInternational: routeInfo['isInternational'] ?? false,
-            routeFound: routeInfo['routeFound'] ?? false,
-            routeAccuracy: routeInfo['routeAccuracy'] ?? 'low',
-          ));
+        }
 
+        routes.add(DeliveryRouteData(
+          origin: originCoords,
+          destination: destCoords,
+          delivery: delivery,
+          routePoints: (routeInfo['routePoints'] as List<dynamic>?)
+                  ?.map((p) => p is LatLng ? p : LatLng(p.latitude ?? p['lat'], p.longitude ?? p['lng']))
+                  .cast<LatLng>()
+                  .toList() ??
+              [],
+          distance: routeInfo['distance']?.toString() ?? '0',
+          duration: routeInfo['duration']?.toString() ?? '0',
+          trafficStatus: routeInfo['trafficStatus']?.toString() ?? 'Unknown',
+          isInternational: routeInfo['isInternational'] ?? false,
+          routeFound: routeInfo['routeFound'] ?? false,
+          routeAccuracy: routeInfo['routeAccuracy'] ?? 'low',
+        ));
+
+        // Determine courier position:
+        // Priority: live courier location in ContainerDelivery (fields like live_coords, current_location, lat/lng)
+        LatLng? liveCourierCoords = _parseLatLngFromDeliveryData(deliveryData, [
+          'live_coords',
+          'current_location',
+          'current_coords',
+          'courier_coords',
+          'courier_location',
+          'latlng',
+          'current_lat',
+        ]);
+
+        if (liveCourierCoords != null) {
+          // Validate and use live coords
+          _courierRoutePositions[containerId] = OSMService.validateAndCorrectCoordinates(liveCourierCoords, originCoords);
+        } else {
           // Calculate courier position 1km from pickup along the route
-          if (routeInfo['routePoints'] != null && routeInfo['routePoints'].isNotEmpty) {
-            final courierPosition = _calculateCourierPositionAlongRoute(
-              routeInfo['routePoints'] as List<LatLng>,
-              1.0 // 1km from pickup
-            );
-            _courierRoutePositions[cargoId] = courierPosition;
+          if (routeInfo['routePoints'] != null && (routeInfo['routePoints'] as List).isNotEmpty) {
+            final pts = (routeInfo['routePoints'] as List).map((p) {
+              if (p is LatLng) return p;
+              if (p is Map) {
+                final lat = (p['lat'] ?? p['latitude']) as num?;
+                final lng = (p['lng'] ?? p['longitude']) as num?;
+                if (lat != null && lng != null) return LatLng(lat.toDouble(), lng.toDouble());
+              }
+              return const LatLng(10.3157, 123.8854);
+            }).toList();
+            final courierPosition = _calculateCourierPositionAlongRoute(pts, 1.0);
+            _courierRoutePositions[containerId] = courierPosition;
+          } else {
+            // default to origin
+            _courierRoutePositions[containerId] = originCoords;
           }
         }
       }
 
       setState(() {
-        _availableCargos = availableCargos;
+        _availableContainers = availableContainers;
         _acceptedDeliveries = acceptedDeliveries;
         _deliveryRoutes = routes;
-        _isLoadingCargo = false;
+        _isLoadingContainer = false;
         _isLoadingRoutes = false;
       });
 
-      // Auto-zoom to show all routes if there are deliveries
-      if (routes.isNotEmpty) {
-        _zoomToFitRoutes();
+      // After loading, ensure map shows Cebu (if nothing to show) or zoom to fit routes
+      if (!_centeredAfterLoad) {
+        _centeredAfterLoad = true;
+        if (_deliveryRoutes.isEmpty) {
+          // No routes: just center on Cebu
+          try {
+            _mapController.move(const LatLng(10.3157, 123.8854), 11.0);
+          } catch (e) {
+            print('Map move error: $e');
+          }
+        } else {
+          _zoomToFitRoutes();
+        }
+      } else {
+        if (routes.isNotEmpty) {
+          _zoomToFitRoutes();
+        }
       }
     } catch (e) {
-      print('[v0] Error loading cargos: $e');
+      print('[v0] Error loading containers: $e');
       setState(() {
-        _isLoadingCargo = false;
+        _isLoadingContainer = false;
         _isLoadingRoutes = false;
       });
     }
   }
 
-  // FIXED: Helper method to handle both String and int cargo_id types
-  String _getCargoId(dynamic cargoIdValue) {
-    if (cargoIdValue == null) return '';
-    if (cargoIdValue is String) return cargoIdValue;
-    if (cargoIdValue is int) return cargoIdValue.toString();
-    return cargoIdValue.toString();
+  // Get courier name from Couriers collection
+  Future<String> _getCourierName(String courierId) async {
+    try {
+      DocumentSnapshot courierDoc = await _firestore
+          .collection('Couriers')
+          .doc(courierId)
+          .get();
+      
+      if (courierDoc.exists) {
+        var courierData = courierDoc.data() as Map<String, dynamic>;
+        String firstName = courierData['first_name'] ?? '';
+        String lastName = courierData['last_name'] ?? '';
+        return '$firstName $lastName'.trim();
+      }
+    } catch (e) {
+      print('Error fetching courier name: $e');
+    }
+    return 'Unknown Courier';
+  }
+
+  // FIXED: Helper method to handle both String and int containerId types
+  String _getContainerId(dynamic containerIdValue) {
+    if (containerIdValue == null) return '';
+    if (containerIdValue is String) return containerIdValue;
+    if (containerIdValue is int) return containerIdValue.toString();
+    return containerIdValue.toString();
   }
 
   // Calculate courier position 1km from pickup along the route
   LatLng _calculateCourierPositionAlongRoute(List<LatLng> routePoints, double distanceKm) {
     if (routePoints.isEmpty) {
-      return const LatLng(14.5995, 120.9842); // Default to Manila if no route points
+      return const LatLng(10.3157, 123.8854); // Default to Cebu if no route points
     }
 
     final Distance distanceCalculator = Distance();
@@ -308,11 +455,11 @@ class _LiveMapPageState extends State<LiveMapPage> {
         // Add courier route positions
         allPoints.addAll(_courierRoutePositions.values);
         
-        // Add available cargo positions (DESTINATION coordinates) - only valid non-Manila locations
-        for (var cargo in _availableCargos) {
-          if (cargo['destination_coords'] != null && 
-              _isValidNonDefaultLocation(cargo['destination_coords'])) {
-            allPoints.add(cargo['destination_coords']);
+        // Add available container positions (DESTINATION coordinates) - only valid non-Cebu locations
+        for (var container in _availableContainers) {
+          if (container['destination_coords'] != null && 
+              _isValidNonDefaultLocation(container['destination_coords'])) {
+            allPoints.add(container['destination_coords']);
           }
         }
         
@@ -407,45 +554,26 @@ class _LiveMapPageState extends State<LiveMapPage> {
       print('Enhanced geocoding error for $address: $e');
     }
 
-    // Fallback to local database
+    // Fallback to local database with Cebu as default
     final locationMap = {
-      // Philippines
-      'Manila': const LatLng(14.5995, 120.9842),
-      'Manila City': const LatLng(14.5995, 120.9842),
+      // Cebu and nearby areas
+      'Don Carlos A. Gothong Port Centre, Quezon Boulevard, Pier 4, Cebu City': const LatLng(10.3119, 123.8853),
       'Cebu': const LatLng(10.3157, 123.8854),
       'Cebu City': const LatLng(10.3157, 123.8854),
+      'Dalaguete': const LatLng(9.8956, 123.5344),
+      'Casey, Dalaguete, Cebu': const LatLng(9.8956, 123.5344),
+      'Alcoy': const LatLng(9.7100, 123.5069),
+      'Bilibid': const LatLng(14.6500, 120.9833), // Assuming this is in Manila area
+      
+      // Other Philippines locations
+      'Manila': const LatLng(14.5995, 120.9842),
+      'Manila City': const LatLng(14.5995, 120.9842),
       'Davao': const LatLng(7.1907, 125.4553),
       'Davao City': const LatLng(7.1907, 125.4553),
       'Batangas': const LatLng(13.7565, 121.0583),
       'Subic': const LatLng(14.7942, 120.2799),
       'Quezon City': const LatLng(14.6760, 121.0437),
       'Makati': const LatLng(14.5547, 121.0244),
-      
-      // International Locations
-      'Singapore': const LatLng(1.3521, 103.8198),
-      'Hong Kong': const LatLng(22.3193, 114.1694),
-      'Tokyo': const LatLng(35.6762, 139.6503),
-      'Seoul': const LatLng(37.5665, 126.9780),
-      'Bangkok': const LatLng(13.7563, 100.5018),
-      'Kuala Lumpur': const LatLng(3.1390, 101.6869),
-      'Taipei': const LatLng(25.0330, 121.5654),
-      'Beijing': const LatLng(39.9042, 116.4074),
-      'Shanghai': const LatLng(31.2304, 121.4737),
-      'Sydney': const LatLng(-33.8688, 151.2093),
-      'Melbourne': const LatLng(-37.8136, 144.9631),
-      'Los Angeles': const LatLng(34.0522, -118.2437),
-      'New York': const LatLng(40.7128, -74.0060),
-      'London': const LatLng(51.5074, -0.1278),
-      'Paris': const LatLng(48.8566, 2.3522),
-      'Dubai': const LatLng(25.2048, 55.2708),
-      'Mumbai': const LatLng(19.0760, 72.8777),
-      'Delhi': const LatLng(28.7041, 77.1025),
-      'Jakarta': const LatLng(-6.2088, 106.8456),
-      'Ho Chi Minh City': const LatLng(10.8231, 106.6297),
-      'Hanoi': const LatLng(21.0278, 105.8342),
-      'Osaka': const LatLng(34.6937, 135.5023),
-      'Busan': const LatLng(35.1796, 129.0756),
-      'Incheon': const LatLng(37.4563, 126.7052),
     };
     
     for (var key in locationMap.keys) {
@@ -454,54 +582,54 @@ class _LiveMapPageState extends State<LiveMapPage> {
       }
     }
     
-    return const LatLng(14.5995, 120.9842); // Default to Manila
+    return const LatLng(10.3157, 123.8854); // Default to Cebu
   }
 
   void _setupRealtimeListeners() {
-    _cargoSubscription = _firestore
-        .collection('Cargo')
-        .snapshots() // Listen to all cargo documents
+    _containerSubscription = _firestore
+        .collection('Containers')
+        .snapshots() // Listen to all container documents
         .listen((snapshot) {
-      _loadAvailableAndAcceptedCargos();
+      _loadAvailableAndAcceptedContainers();
     });
 
     final user = _auth.currentUser;
     if (user != null) {
       _deliverySubscription = _firestore
-          .collection('CargoDelivery')
+          .collection('ContainerDelivery')
           .where('courier_id', isEqualTo: user.uid)
           .snapshots()
           .listen((snapshot) {
-        _loadAvailableAndAcceptedCargos();
+        _loadAvailableAndAcceptedContainers();
       });
     }
   }
 
-  void _showCargoDetailsForMarker(Map<String, dynamic> cargoData) {
+  void _showContainerDetailsForMarker(Map<String, dynamic> containerData) {
     setState(() {
-      _selectedCargoDetails = cargoData;
-      _showCargoDetails = true;
+      _selectedContainerDetails = containerData;
+      _showContainerDetails = true;
     });
   }
 
-  void _hideCargoDetailsModal() {
+  void _hideContainerDetailsModal() {
     setState(() {
-      _showCargoDetails = false;
-      _selectedCargoDetails = null;
+      _showContainerDetails = false;
+      _selectedContainerDetails = null;
     });
   }
 
-  // Helper method to check if location is valid and not the default Manila location
+  // Helper method to check if location is valid and not the default Cebu location
   bool _isValidNonDefaultLocation(LatLng coords) {
-    final manila = const LatLng(14.5995, 120.9842);
+    final cebu = const LatLng(10.3157, 123.8854);
     final distance = Distance();
-    // Only show locations that are at least 1km away from Manila default
-    return distance(coords, manila) > 1000; // 1km in meters
+    // Only show locations that are at least 1km away from Cebu default
+    return distance(coords, cebu) > 1000; // 1km in meters
   }
 
   @override
   void dispose() {
-    _cargoSubscription?.cancel();
+    _containerSubscription?.cancel();
     _deliverySubscription?.cancel();
     super.dispose();
   }
@@ -517,10 +645,10 @@ class _LiveMapPageState extends State<LiveMapPage> {
               LiveMapWidget(
                 mapController: _mapController,
                 deliveryRoutes: _deliveryRoutes,
-                availableCargos: _availableCargos,
+                availableContainers: _availableContainers,
                 acceptedDeliveries: _acceptedDeliveries,
                 courierRoutePositions: _courierRoutePositions,
-                onDestinationTap: _showCargoDetailsForMarker,
+                onDestinationTap: _showContainerDetailsForMarker,
                 isLoadingRoutes: _isLoadingRoutes,
               ),
               
@@ -544,9 +672,8 @@ class _LiveMapPageState extends State<LiveMapPage> {
                     }),
                     const SizedBox(height: 8),
                     _buildMapControl(Icons.my_location, () {
-                      if (_deliveryRoutes.isNotEmpty) {
-                        _mapController.move(_deliveryRoutes.first.origin, 12.0);
-                      }
+                      // Always return to Cebu when location button is pressed
+                      _mapController.move(const LatLng(10.3157, 123.8854), 11.0);
                     }),
                   ],
                 ),
@@ -583,12 +710,12 @@ class _LiveMapPageState extends State<LiveMapPage> {
             ],
           ),
 
-          if (_showCargoDetails && _selectedCargoDetails != null)
+          if (_showContainerDetails && _selectedContainerDetails != null)
             Positioned.fill(
               child: Container(
                 color: Colors.black54,
                 child: Center(
-                  child: _buildCargoDetailsModal(),
+                  child: _buildContainerDetailsModal(),
                 ),
               ),
             ),
@@ -630,14 +757,14 @@ class _LiveMapPageState extends State<LiveMapPage> {
             icon: Icons.location_on,
           ),
           LegendItem(
-            color: const Color(0xFF3B82F6),
+            color: const Color(0xFFEF4444),
             label: 'Delivery Point',
-            icon: Icons.flag,
+            icon: Icons.location_on,
           ),
           LegendItem(
             color: const Color(0xFF8B5CF6),
-            label: 'Available Cargo',
-            icon: Icons.inventory_2,
+            label: 'Available Container',
+            icon: Icons.local_shipping,
           ),
           LegendItem(
             color: const Color(0xFFEF4444),
@@ -650,9 +777,9 @@ class _LiveMapPageState extends State<LiveMapPage> {
             icon: Icons.language,
           ),
           LegendItem(
-            color: const Color(0xFF8B5CF6),
-            label: 'Cancelled Cargo',
-            icon: Icons.inventory_2,
+            color: const Color(0xFF6B7280),
+            label: 'Cancelled Container',
+            icon: Icons.local_shipping,
             isCancelled: true,
           ),
         ],
@@ -660,12 +787,12 @@ class _LiveMapPageState extends State<LiveMapPage> {
     );
   }
 
-  Widget _buildCargoDetailsModal() {
-    final cargo = _selectedCargoDetails!;
-    final isAccepted = _acceptedDeliveries.any((d) => d['cargo_id'] == cargo['cargo_id']);
-    final isCancelled = cargo['status'] == 'cancelled';
+  Widget _buildContainerDetailsModal() {
+    final container = _selectedContainerDetails!;
+    final isAccepted = _acceptedDeliveries.any((d) => d['containerId'] == container['containerId']);
+    final isCancelled = container['status'] == 'cancelled';
     final routeData = _deliveryRoutes.firstWhere(
-      (r) => r.delivery['cargo_id'] == cargo['cargo_id'],
+      (r) => r.delivery['containerId'] == container['containerId'],
       orElse: () => DeliveryRouteData(
         origin: const LatLng(0, 0),
         destination: const LatLng(0, 0),
@@ -680,7 +807,7 @@ class _LiveMapPageState extends State<LiveMapPage> {
       ),
     );
     
-    final courierOnRoute = _courierRoutePositions.containsKey(cargo['cargo_id']);
+    final courierOnRoute = _courierRoutePositions.containsKey(container['containerId']);
     
     return Container(
       width: MediaQuery.of(context).size.width * 0.9,
@@ -708,7 +835,7 @@ class _LiveMapPageState extends State<LiveMapPage> {
                 Row(
                   children: [
                     Icon(
-                      Icons.inventory_2, // Same icon for all cargos
+                      Icons.local_shipping, // now using truck icon for container header
                       color: isCancelled ? const Color(0xFF6B7280) : 
                              (routeData.isInternational ? const Color(0xFFEF4444) : const Color(0xFF3B82F6)),
                       size: 24,
@@ -718,7 +845,7 @@ class _LiveMapPageState extends State<LiveMapPage> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          cargo['containerNo'] ?? 'N/A',
+                          container['containerNo'] ?? 'N/A',
                           style: TextStyle(
                             fontSize: 20,
                             fontWeight: FontWeight.w700,
@@ -802,7 +929,7 @@ class _LiveMapPageState extends State<LiveMapPage> {
                   ],
                 ),
                 IconButton(
-                  onPressed: _hideCargoDetailsModal,
+                  onPressed: _hideContainerDetailsModal,
                   icon: const Icon(Icons.close, size: 24),
                 ),
               ],
@@ -810,23 +937,24 @@ class _LiveMapPageState extends State<LiveMapPage> {
             
             const SizedBox(height: 20),
             
-            // Cargo Information Section
+            // Container Information Section 
             _buildInfoSection(
-              title: "Cargo Information",
-              icon: Icons.inventory_2,
+              title: "Container Information",
+              icon: Icons.local_shipping,
               children: [
-                _buildDetailRow(Icons.description, "Description", cargo['description'] ?? 'N/A'),
-                _buildDetailRow(Icons.numbers, "Item Number", cargo['item_number']?.toString() ?? 'N/A'),
-                _buildDetailRow(Icons.code, "HS Code", cargo['hs_code']?.toString() ?? 'N/A'),
-                _buildDetailRow(Icons.format_list_numbered, "Quantity", cargo['quantity']?.toString() ?? 'N/A'),
-                _buildDetailRow(Icons.scale, "Weight", "${cargo['weight'] ?? 0} kg"),
-                _buildDetailRow(Icons.attach_money, "Value", "\$${cargo['value'] ?? 0}"),
+                _buildDetailRow(Icons.description, "Cargo Type", container['cargoType'] ?? 'N/A'),
+                _buildDetailRow(Icons.numbers, "Container Number", container['containerNo']?.toString() ?? 'N/A'),
+                _buildDetailRow(Icons.person, "Consignee Name", container['consigneeName']?.toString() ?? 'N/A'),
+                _buildDetailRow(Icons.local_shipping, "Assigned Courier", container['confirmed_by'] ?? 'Not Assigned'),
+                _buildDetailRow(Icons.security, "Seal Number", container['sealNumber']?.toString() ?? 'N/A'),
+                _buildDetailRow(Icons.confirmation_number, "Voyage ID", container['voyageId']?.toString() ?? 'N/A'),
+                _buildDetailRow(Icons.priority_high, "Priority", container['priority']?.toString().toUpperCase() ?? 'NORMAL'),
                 _buildDetailRow(
                   Icons.info, 
                   "Status", 
-                  cargo['status']?.toUpperCase() ?? 'PENDING',
+                  container['status']?.toUpperCase() ?? 'PENDING',
                   valueColor: isCancelled ? const Color(0xFFEF4444) : 
-                             (cargo['status'] == 'delivered' ? const Color(0xFF10B981) : null),
+                             (container['status'] == 'delivered' ? const Color(0xFF10B981) : null),
                 ),
               ],
             ),
@@ -839,8 +967,8 @@ class _LiveMapPageState extends State<LiveMapPage> {
               title: "Route Information",
               icon: Icons.route,
               children: [
-                _buildDetailRow(Icons.location_on, "Origin", cargo['origin'] ?? 'N/A'),
-                _buildDetailRow(Icons.flag, "Destination", cargo['destination'] ?? 'N/A'),
+                _buildDetailRow(Icons.location_on, "Origin", DECLARED_ORIGIN),
+                _buildDetailRow(Icons.flag, "Destination", container['consigneeAddress'] ?? 'N/A'),
                 if (isAccepted && routeData.distance != '0') ...[
                   _buildDetailRow(Icons.space_dashboard, "Distance", "${routeData.distance} km"),
                   _buildDetailRow(Icons.access_time, "Estimated Time", "${routeData.duration} min"),
@@ -872,13 +1000,13 @@ class _LiveMapPageState extends State<LiveMapPage> {
                 ),
                 _buildDetailRow(
                   Icons.location_on, 
-                  "Cargo Location", 
-                  "At destination: ${cargo['destination'] ?? 'N/A'}",
+                  "Container Location", 
+                  "At destination: ${container['consigneeAddress'] ?? 'N/A'}",
                 ),
                 _buildDetailRow(
                   Icons.note, 
                   "Note", 
-                  "This delivery has been cancelled. The cargo is located at its destination.",
+                  "This delivery has been cancelled. The container is located at its destination.",
                 ),
               ],
             ),
@@ -889,7 +1017,7 @@ class _LiveMapPageState extends State<LiveMapPage> {
             SizedBox(
               width: double.infinity,
               child: ElevatedButton(
-                onPressed: _hideCargoDetailsModal,
+                onPressed: _hideContainerDetailsModal,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: isCancelled ? const Color(0xFF6B7280) : const Color(0xFF3B82F6),
                   foregroundColor: Colors.white,
@@ -1057,10 +1185,10 @@ class _LiveMapPageState extends State<LiveMapPage> {
             label: 'Home',
           ),
           BottomNavigationBarItem(
-            icon: Icon(Icons.schedule_outlined),
-            activeIcon: Icon(Icons.schedule),
-            label: 'Schedule',
-          ),
+          icon: Icon(Icons.format_list_bulleted_outlined),
+          activeIcon: Icon(Icons.format_list_bulleted),
+          label: 'Tasks',
+        ),
           BottomNavigationBarItem(
             icon: Icon(Icons.map_outlined),
             activeIcon: Icon(Icons.map),
@@ -1074,6 +1202,56 @@ class _LiveMapPageState extends State<LiveMapPage> {
         ],
       ),
     );
+  }
+
+  // Helper: try parsing various delivery fields to a LatLng
+  LatLng? _parseLatLngFromDeliveryData(Map<String, dynamic> data, List<String> possibleKeys) {
+    for (final key in possibleKeys) {
+      if (!data.containsKey(key)) continue;
+      final value = data[key];
+      final latlng = _latLngFromDynamic(value);
+      if (latlng != null) return latlng;
+    }
+    return null;
+  }
+
+  LatLng? _latLngFromDynamic(dynamic value) {
+    try {
+      if (value == null) return null;
+      if (value is LatLng) return value;
+      if (value is Map) {
+        // Accept many key shapes
+        final lat = value['lat'] ?? value['latitude'] ?? value['latitude'] ?? value['latCoord'] ?? value['lat1'];
+        final lng = value['lng'] ?? value['lon'] ?? value['longitude'] ?? value['lngCoord'] ?? value['lon1'];
+        if (lat != null && lng != null) {
+          return LatLng((lat as num).toDouble(), (lng as num).toDouble());
+        }
+        // Some systems store as {'latitude':{'value':...}, ...} - ignore for now
+      }
+      if (value is List && value.length >= 2) {
+        final lat = value[0];
+        final lng = value[1];
+        if (lat != null && lng != null) {
+          return LatLng((lat as num).toDouble(), (lng as num).toDouble());
+        }
+      }
+      if (value is String) {
+        // Accept "lat,lng"
+        final parts = value.split(',');
+        if (parts.length >= 2) {
+          final lat = double.tryParse(parts[0].trim());
+          final lng = double.tryParse(parts[1].trim());
+          if (lat != null && lng != null) return LatLng(lat, lng);
+        }
+      }
+      if (value is num) {
+        // Single numeric value - cannot parse
+        return null;
+      }
+    } catch (e) {
+      print('Error parsing latlng: $e');
+    }
+    return null;
   }
 }
 
@@ -1106,7 +1284,7 @@ class DeliveryRouteData {
 class LiveMapWidget extends StatelessWidget {
   final MapController mapController;
   final List<DeliveryRouteData> deliveryRoutes;
-  final List<Map<String, dynamic>> availableCargos;
+  final List<Map<String, dynamic>> availableContainers;
   final List<Map<String, dynamic>> acceptedDeliveries;
   final Map<String, LatLng> courierRoutePositions;
   final Function(Map<String, dynamic>) onDestinationTap;
@@ -1116,19 +1294,73 @@ class LiveMapWidget extends StatelessWidget {
     super.key,
     required this.mapController,
     required this.deliveryRoutes,
-    required this.availableCargos,
+    required this.availableContainers,
     required this.acceptedDeliveries,
     required this.courierRoutePositions,
     required this.onDestinationTap,
     required this.isLoadingRoutes,
   });
 
-  // Helper method to check if location is valid and not the default Manila location
+  // Helper method to check if location is valid and not the default Cebu location
   bool _isValidNonDefaultLocation(LatLng coords) {
-    final manila = const LatLng(14.5995, 120.9842);
+    final cebu = const LatLng(10.3157, 123.8854);
     final distance = Distance();
-    // Only show locations that are at least 1km away from Manila default
-    return distance(coords, manila) > 1000; // 1km in meters
+    // Only show locations that are at least 1km away from Cebu default
+    return distance(coords, cebu) > 1000; // 1km in meters
+  }
+
+  // Build a simple styled container/truck marker that visually leans toward the provided image
+  Widget _buildContainerMarker(BuildContext context, Color backgroundColor, Color cabColor) {
+    return SizedBox(
+      width: 44,
+      height: 30,
+      child: Stack(
+        alignment: Alignment.centerLeft,
+        children: [
+          // container box (white)
+          Positioned(
+            left: 8,
+            right: 0,
+            top: 4,
+            bottom: 4,
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(4),
+                border: Border.all(color: Colors.grey.shade300, width: 1),
+                boxShadow: [
+                  BoxShadow(color: Colors.black.withOpacity(0.12), blurRadius: 4, offset: const Offset(0,1)),
+                ],
+              ),
+              child: Center(
+                child: Icon(
+                  Icons.inventory_2,
+                  size: 14,
+                  color: Colors.amber.shade700, // yellow boxes inside
+                ),
+              ),
+            ),
+          ),
+          // truck cab (colored square) to emulate the red cab in the image
+          Positioned(
+            left: 0,
+            top: 6,
+            bottom: 6,
+            child: Container(
+              width: 16,
+              decoration: BoxDecoration(
+                color: cabColor,
+                borderRadius: BorderRadius.circular(3),
+                boxShadow: [
+                  BoxShadow(color: Colors.black.withOpacity(0.18), blurRadius: 3, offset: const Offset(0,1)),
+                ],
+              ),
+              child: const Icon(Icons.directions_car, size: 12, color: Colors.white),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -1136,7 +1368,7 @@ class LiveMapWidget extends StatelessWidget {
     return FlutterMap(
       mapController: mapController,
       options: MapOptions(
-        initialCenter: const LatLng(14.5995, 120.9842), // Manila
+        initialCenter: const LatLng(10.3157, 123.8854), // Cebu
         initialZoom: 10.0,
         minZoom: 3.0,
         maxZoom: 18.0,
@@ -1145,13 +1377,13 @@ class LiveMapWidget extends StatelessWidget {
         ),
       ),
       children: [
-        // FIXED: Using German OSM tiles instead of volunteer servers
+        // Using reliable OSM tiles
         TileLayer(
           urlTemplate: 'https://tile.openstreetmap.de/{z}/{x}/{y}.png',
           userAgentPackageName: 'com.example.cargo_delivery_app', // Replace with your actual package name
         ),
         
-        // FIXED: Added proper attribution
+        // Proper attribution
         RichAttributionWidget(
           attributions: [
             TextSourceAttribution(
@@ -1161,14 +1393,14 @@ class LiveMapWidget extends StatelessWidget {
           ],
         ),
         
-        // Draw routes for active deliveries with accuracy indication
+        // Draw routes for active deliveries with RED color (as requested)
         for (final route in deliveryRoutes)
           if (route.routePoints.isNotEmpty)
             PolylineLayer(
               polylines: [
                 Polyline(
                   points: route.routePoints,
-                  color: route.isInternational ? const Color(0xFFEF4444) : const Color(0xFF3B82F6),
+                  color: const Color(0xFFEF4444), // RED for all routes
                   strokeWidth: route.routeAccuracy == 'high' ? 4.0 : 3.0,
                   borderColor: route.routeAccuracy == 'high' ? Colors.transparent : Colors.grey,
                   borderStrokeWidth: 1.0,
@@ -1178,7 +1410,7 @@ class LiveMapWidget extends StatelessWidget {
               ],
             ),
         
-        // Pickup points for active deliveries
+        // Pickup points for active deliveries (green location icon)
         for (final route in deliveryRoutes)
           MarkerLayer(
             markers: [
@@ -1212,6 +1444,7 @@ class LiveMapWidget extends StatelessWidget {
           ),
         
         // Destination points for active deliveries
+        // CHANGED: use the same location icon but with RED background (as requested)
         for (final route in deliveryRoutes)
           MarkerLayer(
             markers: [
@@ -1223,7 +1456,7 @@ class LiveMapWidget extends StatelessWidget {
                   onTap: () => onDestinationTap(route.delivery),
                   child: Container(
                     decoration: BoxDecoration(
-                      color: const Color(0xFF3B82F6),
+                      color: const Color(0xFFEF4444), // RED background for destination
                       shape: BoxShape.circle,
                       boxShadow: [
                         BoxShadow(
@@ -1234,7 +1467,7 @@ class LiveMapWidget extends StatelessWidget {
                       ],
                     ),
                     child: const Icon(
-                      Icons.flag,
+                      Icons.location_on, // same icon as pickup but red background
                       color: Colors.white,
                       size: 24,
                     ),
@@ -1244,47 +1477,34 @@ class LiveMapWidget extends StatelessWidget {
             ],
           ),
         
-        // All cargos (available, in-progress, and cancelled) placed at DESTINATION coordinates
-        // FIXED: Only show cargos with valid non-Manila locations
-        for (final cargo in availableCargos)
-          if (cargo['destination_coords'] != null && 
-              _isValidNonDefaultLocation(cargo['destination_coords']))
-            MarkerLayer(
-              markers: [
-                Marker(
-                  point: cargo['destination_coords'],
-                  width: 40,
-                  height: 40,
-                  child: GestureDetector(
-                    onTap: () => onDestinationTap(cargo),
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: cargo['status'] == 'cancelled' 
-                            ? const Color(0xFF6B7280) // Grey for cancelled
-                            : const Color(0xFF8B5CF6), // Purple for all other statuses
-                        shape: BoxShape.circle,
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withOpacity(0.2),
-                            blurRadius: 8,
-                            offset: const Offset(0, 2),
-                          ),
-                        ],
-                      ),
-                      child: const Icon(
-                        Icons.inventory_2, // Same icon for all cargos
-                        color: Colors.white,
-                        size: 20,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
+        // All containers (available, in-progress, and cancelled) placed at DESTINATION coordinates
+        // CHANGED: use a truck/container-styled marker (to visually match the provided image)
+        for (final container in availableContainers)
+  if (container['destination_coords'] != null &&
+      _isValidNonDefaultLocation(container['destination_coords']))
+    MarkerLayer(
+      markers: [
+        // compute status/colors here, then pass a child widget
+        Marker(
+          point: container['destination_coords'],
+          width: 44,
+          height: 30,
+          // builder is not defined in this flutter_map version; use `child`
+          child: Builder(builder: (context) {
+            final isCancelled = container['status'] == 'cancelled';
+            final cabColor = isCancelled ? const Color(0xFF6B7280) : const Color(0xFFE53935); // red cab
+            return GestureDetector(
+              onTap: () => onDestinationTap(container),
+              child: _buildContainerMarker(context, Colors.white, cabColor),
+            );
+          }),
+        ),
+      ],
+    ),
         
-        // Courier positions on route (1km from pickup)
+        // Courier positions on route (1km from pickup or live coords from ContainerDelivery)
         for (final entry in courierRoutePositions.entries)
-          if (_isValidNonDefaultLocation(entry.value)) // FIXED: Only show valid courier positions
+          if (_isValidNonDefaultLocation(entry.value)) // Only show valid courier positions
             MarkerLayer(
               markers: [
                 Marker(
@@ -1293,12 +1513,12 @@ class LiveMapWidget extends StatelessWidget {
                   height: 40,
                   child: GestureDetector(
                     onTap: () {
-                      final cargo = acceptedDeliveries.firstWhere(
-                        (d) => d['cargo_id'] == entry.key,
+                      final container = acceptedDeliveries.firstWhere(
+                        (d) => d['containerId'] == entry.key,
                         orElse: () => {},
                       );
-                      if (cargo.isNotEmpty) {
-                        onDestinationTap(cargo);
+                      if (container.isNotEmpty) {
+                        onDestinationTap(container);
                       }
                     },
                     child: Container(
@@ -1314,7 +1534,7 @@ class LiveMapWidget extends StatelessWidget {
                         ],
                       ),
                       child: const Icon(
-                        Icons.local_shipping,
+                        Icons.local_shipping, // courier uses truck icon too but as a route/courier indicator
                         color: Colors.white,
                         size: 20,
                       ),

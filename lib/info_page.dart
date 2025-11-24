@@ -96,9 +96,9 @@ class _InfoPageState extends State<InfoPage> {
       if (user != null) {
         // Query CargoDelivery for active deliveries for this courier
         final querySnapshot = await _firestore
-            .collection('CargoDelivery')
+            .collection('ContainerDelivery')
             .where('courier_id', isEqualTo: user.uid)
-            .where('status', whereIn: ['in-progress', 'accepted', 'picked-up', 'on-the-way'])
+            .where('status', whereIn: ['in-progress', 'accepted'])
             .get();
 
         setState(() {

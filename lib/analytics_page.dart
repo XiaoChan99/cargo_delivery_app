@@ -54,34 +54,34 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
     try {
       // Get total deliveries count (only deliveries accepted by this courier)
       QuerySnapshot totalSnapshot = await _firestore
-          .collection('CargoDelivery')
+          .collection('ContainerDelivery')
           .where('courier_id', isEqualTo: widget.userId)
           .get();
 
       // Get completed deliveries
       QuerySnapshot completedSnapshot = await _firestore
-          .collection('CargoDelivery')
+          .collection('ContainerDelivery')
           .where('courier_id', isEqualTo: widget.userId)
           .where('status', isEqualTo: 'delivered')
           .get();
 
       // Get in-progress deliveries
       QuerySnapshot inProgressSnapshot = await _firestore
-          .collection('CargoDelivery')
+          .collection('ContainerDelivery')
           .where('courier_id', isEqualTo: widget.userId)
           .where('status', whereIn: ['in-progress', 'in_transit', 'assigned'])
           .get();
 
       // Get delayed deliveries
       QuerySnapshot delayedSnapshot = await _firestore
-          .collection('CargoDelivery')
+          .collection('ContainerDelivery')
           .where('courier_id', isEqualTo: widget.userId)
           .where('status', isEqualTo: 'delayed')
           .get();
 
       // Get cancelled deliveries
       QuerySnapshot cancelledSnapshot = await _firestore
-          .collection('CargoDelivery')
+          .collection('ContainerDelivery')
           .where('courier_id', isEqualTo: widget.userId)
           .where('status', isEqualTo: 'cancelled')
           .get();
@@ -110,7 +110,7 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
   Future<double> _calculateAverageDeliveryTime() async {
     try {
       QuerySnapshot completedDeliveries = await _firestore
-          .collection('CargoDelivery')
+          .collection('ContainerDelivery')
           .where('courier_id', isEqualTo: widget.userId)
           .where('status', isEqualTo: 'delivered')
           .get();
@@ -144,7 +144,7 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
   Future<void> _loadStatusDistribution() async {
     try {
       QuerySnapshot snapshot = await _firestore
-          .collection('CargoDelivery')
+          .collection('ContainerDelivery')
           .where('courier_id', isEqualTo: widget.userId)
           .get();
 
@@ -196,7 +196,7 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
   Future<void> _loadMonthlyData() async {
     try {
       QuerySnapshot snapshot = await _firestore
-          .collection('CargoDelivery')
+          .collection('ContainerDelivery')
           .where('courier_id', isEqualTo: widget.userId)
           .get();
 

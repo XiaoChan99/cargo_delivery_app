@@ -13,6 +13,9 @@ import 'analytics_page.dart';
 import 'order_history_page.dart';
 import 'status_update_page.dart'; 
 
+// Add this constant at the top of the file after the imports
+const String DECLARED_ORIGIN = "Don Carlos A. Gothong Port Centre, Quezon Boulevard, Pier 4, Cebu City.";
+
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
 
@@ -32,8 +35,8 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
   bool _hasUnreadNotifications = false;
   StreamSubscription? _notificationSubscription;
 
-  // Cargo Lists
-  List<Map<String, dynamic>> _availableCargos = [];
+  // Container Lists
+  List<Map<String, dynamic>> _availableContainers = [];
   List<Map<String, dynamic>> _inProgressDeliveries = [];
 
   @override
@@ -42,7 +45,7 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
     _currentUser = _auth.currentUser;
     if (_currentUser != null) {
       _loadData();
-      setupCargoListener(_loadAvailableCargos);
+      setupContainerListener(_loadAvailableContainers);
       setupDeliveryListener(_currentUser!.uid, _loadInProgressDeliveries);
       _setupNotificationListener();
     } else {
@@ -87,7 +90,7 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
     try {
       await Future.wait([
         _loadUserData(),
-        _loadAvailableCargos(),
+        _loadAvailableContainers(),
         _loadInProgressDeliveries(),
       ]);
     } catch (e) {
@@ -101,126 +104,161 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
     }
   }
 
-  Future<void> _loadAvailableCargos() async {
+  Future<void> _loadAvailableContainers() async {
   try {
-    print('Loading available cargos...');
+    print('=== DEBUG: Loading available containers ===');
     
-    QuerySnapshot cargoSnapshot = await _firestore
-        .collection('Cargo')
-        .orderBy('created_at', descending: true)
+    QuerySnapshot containerSnapshot = await _firestore
+        .collection('Containers')
+        .orderBy('dateCreated', descending: true)
         .get();
+
+    print('DEBUG: Found ${containerSnapshot.docs.length} total containers');
+    
+    // Print all containers for debugging
+    for (var doc in containerSnapshot.docs) {
+      var containerData = doc.data() as Map<String, dynamic>;
+      print('DEBUG Container: ${doc.id}');
+      print('  - ContainerNumber: ${containerData['containerNumber']}');
+      print('  - AllocationStatus: ${containerData['allocationStatus']}');
+      print('  - Status: ${containerData['status']}');
+      print('  - Has allocationStatus field: ${containerData.containsKey('allocationStatus')}');
+      print('  - All fields: ${containerData.keys.toList()}');
+    }
 
     QuerySnapshot deliverySnapshot = await _firestore
-        .collection('CargoDelivery')
+        .collection('ContainerDelivery')
         .get();
 
-    Set<String> assignedCargoIds = {};
-    Map<String, String> cargoDeliveryStatus = {};
+    print('DEBUG: Found ${deliverySnapshot.docs.length} delivery records');
     
-    // Get all cargo IDs that have delivery records
+    Set<String> assignedContainerIds = {};
+    Map<String, String> containerDeliveryStatus = {};
+    
+    // Get all container IDs that have delivery records
     for (var doc in deliverySnapshot.docs) {
       var deliveryData = doc.data() as Map<String, dynamic>;
-      if (deliveryData['cargo_id'] != null) {
-        String cargoId = deliveryData['cargo_id'].toString();
-        assignedCargoIds.add(cargoId);
-        cargoDeliveryStatus[cargoId] = deliveryData['status']?.toString().toLowerCase() ?? '';
+      if (deliveryData['containerId'] != null) {
+        String containerId = deliveryData['containerId'].toString();
+        assignedContainerIds.add(containerId);
+        containerDeliveryStatus[containerId] = deliveryData['status']?.toString().toLowerCase() ?? '';
+        print('DEBUG Delivery: Container $containerId has status: ${deliveryData['status']}');
       }
     }
 
-    List<Map<String, dynamic>> availableCargos = [];
+    List<Map<String, dynamic>> availableContainers = [];
     
-    for (var doc in cargoSnapshot.docs) {
-      var cargoData = doc.data() as Map<String, dynamic>;
-      String cargoId = doc.id;
+    for (var doc in containerSnapshot.docs) {
+      var containerData = doc.data() as Map<String, dynamic>;
+      String containerId = doc.id;
 
-      // Check if cargo has a delivery record
-      bool hasDeliveryRecord = assignedCargoIds.contains(cargoId);
-      String deliveryStatus = cargoDeliveryStatus[cargoId] ?? '';
+      // Check if container has a delivery record
+      bool hasDeliveryRecord = assignedContainerIds.contains(containerId);
+      String deliveryStatus = containerDeliveryStatus[containerId] ?? '';
       
-      // Include cargo if:
-      // 1. It has NO delivery record OR
+      // Get allocation status from container data - handle null/empty cases
+      String allocationStatus = (containerData['allocationStatus']?.toString().toLowerCase() ?? '').trim();
+      
+      // Get container status from container data
+      String containerStatus = (containerData['status']?.toString().toLowerCase() ?? '').trim();
+      
+      print('DEBUG Processing: $containerId');
+      print('  - Has delivery record: $hasDeliveryRecord');
+      print('  - Delivery status: $deliveryStatus');
+      print('  - Allocation status: "$allocationStatus"');
+      print('  - Container status: "$containerStatus"');
+      print('  - Allocation status == "released": ${allocationStatus == "released"}');
+      print('  - Container status == "accepted": ${containerStatus == "accepted"}');
+      
+      // Include container if:
+      // 1. It has NO delivery record AND allocationStatus is 'released' AND container status is not 'accepted' OR
       // 2. It has delivery record but status is 'cancelled'
-      if (!hasDeliveryRecord || deliveryStatus == 'cancelled') {
-        // Generate sequential container number based on cargo ID
-        String containerNo = _generateContainerNumber(cargoId);
-        
+      bool shouldInclude = false;
+      String inclusionReason = '';
+      
+      if (!hasDeliveryRecord && allocationStatus == 'released' && containerStatus != 'accepted') {
+        shouldInclude = true;
+        inclusionReason = 'No delivery record + released + not accepted';
+      } else if (deliveryStatus == 'cancelled') {
+        shouldInclude = true;
+        inclusionReason = 'Cancelled delivery';
+      }
+      
+      print('  - Should include: $shouldInclude ($inclusionReason)');
+      
+      if (shouldInclude) {
+        // Use ACTUAL field names from your Firestore documents
         Map<String, dynamic> combinedData = {
-          'cargo_id': cargoId,
-          'containerNo': containerNo,
+          'containerId': containerId,
+          'containerNumber': containerData['containerNumber']?.toString() ?? 'N/A',
+          'sealNumber': containerData['sealNumber']?.toString() ?? 'N/A',
+          'billOfLading': containerData['billOfLading']?.toString() ?? 'N/A',
+          'consigneeName': containerData['consigneeName']?.toString() ?? 'N/A',
+          'consigneeAddress': containerData['consigneeAddress']?.toString() ?? 'N/A',
+          'consignorName': containerData['consignorName']?.toString() ?? 'N/A',
+          'consignorAddress': containerData['consignorAddress']?.toString() ?? 'N/A',
+          'priority': containerData['priority']?.toString() ?? 'normal',
+          'deliveredBy': containerData['deliveredBy']?.toString() ?? '',
+          'voyageId': containerData['voyageId']?.toString() ?? '',
+          'location': DECLARED_ORIGIN,
+          'destination': containerData['destination']?.toString() ?? 'Delivery Point',
+          'cargoType': containerData['cargoType']?.toString() ?? 'General',
           'status': deliveryStatus.isNotEmpty ? deliveryStatus : 'pending',
-          'pickupLocation': cargoData['origin']?.toString() ?? 'Port Terminal',
-          'destination': cargoData['destination']?.toString() ?? 'Delivery Point',
-          'created_at': cargoData['created_at'],
-          'description': cargoData['description']?.toString() ?? 'N/A',
-          'weight': cargoData['weight'] ?? 0.0,
-          'value': cargoData['value'] ?? 0.0,
-          'hs_code': cargoData['hs_code']?.toString() ?? 'N/A',
-          'quantity': cargoData['quantity'] ?? 0,
-          'item_number': cargoData['item_number'] ?? 0,
-          'additional_info': cargoData['additional_info']?.toString() ?? '',
-          'submanifest_id': cargoData['submanifest_id']?.toString() ?? '',
+          'allocationStatus': allocationStatus,
+          'containerStatus': containerStatus,
+          'created_at': containerData['dateCreated'],
           'is_cancelled': deliveryStatus == 'cancelled',
-          'sequence_number': _extractSequenceNumber(cargoId), // For sorting
+          'sequence_number': _extractSequenceNumber(containerId),
         };
-        availableCargos.add(combinedData);
+        availableContainers.add(combinedData);
         
-        print('Added cargo: $cargoId, Container: $containerNo, status: $deliveryStatus, hasDelivery: $hasDeliveryRecord');
+        print('  ✓ ADDED container: $containerId');
       } else {
-        print('Skipped cargo: $cargoId, status: $deliveryStatus');
+        print('  ✗ SKIPPED container: $containerId');
       }
     }
 
-    // Sort available cargos by sequence number (cargo ID)
-    availableCargos.sort((a, b) {
+    // Sort available containers by sequence number (container ID)
+    availableContainers.sort((a, b) {
       int seqA = a['sequence_number'] ?? 0;
       int seqB = b['sequence_number'] ?? 0;
       return seqA.compareTo(seqB);
     });
 
     setState(() {
-      _availableCargos = availableCargos;
+      _availableContainers = availableContainers;
     });
     
-    print('Found ${_availableCargos.length} available cargos');
-    
-    // Debug: Print all available cargos in sequence
-    for (var cargo in _availableCargos) {
-      print('Available Cargo: ${cargo['containerNo']} - ${cargo['status']} - Sequence: ${cargo['sequence_number']}');
-    }
+    print('=== DEBUG: Found ${_availableContainers.length} available containers ===');
     
   } catch (e) {
-    print('Error loading available cargos: $e');
+    print('ERROR loading available containers: $e');
+    print('Stack trace: ${e.toString()}');
     setState(() {
-      _availableCargos = [];
+      _availableContainers = [];
     });
   }
 }
 
-  // Generate container number based on cargo ID sequence
-  String _generateContainerNumber(String cargoId) {
-    int sequenceNumber = _extractSequenceNumber(cargoId);
-    return 'CONT-$sequenceNumber';
-  }
-
-  // Extract sequence number from cargo ID
-  int _extractSequenceNumber(String cargoId) {
+  // Extract sequence number from container ID
+  int _extractSequenceNumber(String containerId) {
     try {
-      // If cargo ID is a simple number
-      if (RegExp(r'^\d+$').hasMatch(cargoId)) {
-        return int.parse(cargoId);
+      // If container ID is a simple number
+      if (RegExp(r'^\d+$').hasMatch(containerId)) {
+        return int.parse(containerId);
       }
       
-      // If cargo ID has prefix like "cargo_123"
+      // If container ID has prefix like "container_123"
       RegExp regex = RegExp(r'(\d+)$');
-      Match? match = regex.firstMatch(cargoId);
+      Match? match = regex.firstMatch(containerId);
       if (match != null) {
         return int.parse(match.group(1)!);
       }
       
       // If no numbers found, use hash code (fallback)
-      return cargoId.hashCode.abs();
+      return containerId.hashCode.abs();
     } catch (e) {
-      print('Error extracting sequence number from $cargoId: $e');
+      print('Error extracting sequence number from $containerId: $e');
       return 0;
     }
   }
@@ -230,7 +268,7 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
     print('Loading in-progress deliveries...');
     
     QuerySnapshot deliverySnapshot = await _firestore
-        .collection('CargoDelivery')
+        .collection('ContainerDelivery')
         .where('courier_id', isEqualTo: _currentUser!.uid)
         .get();
 
@@ -240,44 +278,44 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
       var deliveryData = doc.data() as Map<String, dynamic>;
       String status = deliveryData['status']?.toString().toLowerCase() ?? '';
       
-      // Only include in-progress, in_transit, assigned, or delayed statuses
-      // (all statuses that indicate the delivery is active)
-      if (status == 'in-progress' || status == 'in_transit' || status == 'assigned' || status == 'delayed') {
+      // Include accepted, in-progress, in_transit, assigned, or delayed statuses
+      if (status == 'accepted' || status == 'in-progress' || status == 'in_transit' || status == 'assigned' || status == 'delayed') {
         try {
-          DocumentSnapshot cargoDoc = await _firestore
-              .collection('Cargo')
-              .doc(deliveryData['cargo_id'].toString())
+          DocumentSnapshot containerDoc = await _firestore
+              .collection('Containers')
+              .doc(deliveryData['containerId'].toString())
               .get();
 
-          if (cargoDoc.exists) {
-            var cargoData = cargoDoc.data() as Map<String, dynamic>;
-            
-            // Generate sequential container number for in-progress deliveries too
-            String containerNo = _generateContainerNumber(deliveryData['cargo_id'].toString());
+          if (containerDoc.exists) {
+            var containerData = containerDoc.data() as Map<String, dynamic>;
             
             Map<String, dynamic> combinedData = {
               'delivery_id': doc.id,
-              'cargo_id': deliveryData['cargo_id'],
-              'containerNo': containerNo,
-              'status': deliveryData['status'] ?? 'in-progress', // Use status from CargoDelivery
-              'pickupLocation': cargoData['origin'] ?? 'Port Terminal',
-              'destination': cargoData['destination'] ?? 'Delivery Point',
+              'containerId': deliveryData['containerId'],
+              'containerNumber': containerData['containerNumber']?.toString() ?? 'N/A',
+              'sealNumber': containerData['sealNumber']?.toString() ?? 'N/A',
+              'billOfLading': containerData['billOfLading']?.toString() ?? 'N/A',
+              'consigneeName': containerData['consigneeName']?.toString() ?? 'N/A',
+              'consigneeAddress': containerData['consigneeAddress']?.toString() ?? 'N/A',
+              'consignorName': containerData['consignorName']?.toString() ?? 'N/A',
+              'consignorAddress': containerData['consignorAddress']?.toString() ?? 'N/A',
+              'priority': containerData['priority']?.toString() ?? 'normal',
+              'deliveredBy': deliveryData['courierFullName'] ?? '',
+              'voyageId': containerData['voyageId']?.toString() ?? '',
+              'location': DECLARED_ORIGIN,
+              'destination': containerData['destination']?.toString() ?? 'Delivery Point',
+              'cargoType': containerData['cargoType']?.toString() ?? 'General',
+              'status': deliveryData['status'] ?? 'in-progress',
               'confirmed_at': deliveryData['confirmed_at'],
               'courier_id': deliveryData['courier_id'],
-              'description': cargoData['description'] ?? 'N/A',
-              'weight': cargoData['weight'] ?? 0.0,
-              'value': cargoData['value'] ?? 0.0,
-              'hs_code': cargoData['hs_code'] ?? 'N/A',
-              'quantity': cargoData['quantity'] ?? 0,
-              'item_number': cargoData['item_number'] ?? 0,
               'proof_image': deliveryData['proof_image'],
-              'confirmed_by': deliveryData['confirmed_by'],
-              'sequence_number': _extractSequenceNumber(deliveryData['cargo_id'].toString()),
+              'confirmed_by': deliveryData['courierFullName'] ?? '',
+              'sequence_number': _extractSequenceNumber(deliveryData['containerId'].toString()),
             };
             inProgressDeliveries.add(combinedData);
           }
         } catch (e) {
-          print('Error loading cargo details for delivery: $e');
+          print('Error loading container details for delivery: $e');
         }
       }
     }
@@ -319,79 +357,151 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
     }
   }
 
-  Future<void> _acceptCargoDelivery(Map<String, dynamic> cargoData) async {
-    try {
-      final user = _auth.currentUser;
-      if (user == null) {
-        _showErrorModal('User not authenticated');
+  Future<void> _acceptContainerDelivery(Map<String, dynamic> containerData) async {
+  try {
+    final user = _auth.currentUser;
+    if (user == null) {
+      _showErrorModal('User not authenticated');
+      return;
+    }
+
+    // Check if container is cancelled
+    final bool isCancelled = containerData['is_cancelled'] == true;
+    if (isCancelled) {
+      _showErrorModal('This delivery has been cancelled and cannot be accepted again.');
+      return;
+    }
+
+    // Check allocation status
+    final String allocationStatus = containerData['allocationStatus']?.toString().toLowerCase() ?? '';
+    if (allocationStatus != 'released') {
+      _showErrorModal('This container is not yet released for delivery.');
+      return;
+    }
+
+    // Check if container is already assigned to someone else
+    final deliveryCheck = await _firestore
+        .collection('ContainerDelivery')
+        .where('containerId', isEqualTo: containerData['containerId'])
+        .limit(1)
+        .get();
+
+    if (deliveryCheck.docs.isNotEmpty) {
+      final existingDelivery = deliveryCheck.docs.first.data();
+      final existingStatus = existingDelivery['status']?.toString().toLowerCase() ?? '';
+      final existingCourierId = existingDelivery['courier_id']?.toString() ?? '';
+      
+      if (existingStatus == 'cancelled') {
+        _showErrorModal('This delivery has been cancelled and cannot be accepted.');
         return;
       }
-
-      // Check if cargo is cancelled
-      final bool isCancelled = cargoData['is_cancelled'] == true;
-      if (isCancelled) {
-        _showErrorModal('This delivery has been cancelled and cannot be accepted again.');
+      
+      if (existingCourierId != user.uid) {
+        _showErrorModal('This container has already been assigned to another courier.');
         return;
       }
+    }
 
-      // Check if cargo is already assigned to someone else
-      final deliveryCheck = await _firestore
-          .collection('CargoDelivery')
-          .where('cargo_id', isEqualTo: cargoData['cargo_id'])
-          .limit(1)
-          .get();
+    // Get courier's full name
+    String courierFullName = _getFullName();
 
-      if (deliveryCheck.docs.isNotEmpty) {
-        final existingDelivery = deliveryCheck.docs.first.data();
-        final existingStatus = existingDelivery['status']?.toString().toLowerCase() ?? '';
-        
-        if (existingStatus == 'cancelled') {
-          _showErrorModal('This delivery has been cancelled and cannot be accepted.');
-          return;
-        }
-        
-        if (existingDelivery['courier_id'] != user.uid) {
-          _showErrorModal('This cargo has already been assigned to another courier.');
-          return;
-        }
-      }
+    // Use batch write to ensure both updates happen atomically
+    WriteBatch batch = _firestore.batch();
 
-      // Create CargoDelivery document with correct field names
-      await _firestore.collection('CargoDelivery').add({
-        'cargo_id': cargoData['cargo_id'],
-        'courier_id': user.uid,
-        'status': 'in-progress',
+    // Update container status to 'accepted' in Containers collection
+    DocumentReference containerRef = _firestore.collection('Containers').doc(containerData['containerId']);
+    batch.update(containerRef, {
+      'status': 'accepted',
+      'updated_at': Timestamp.now(),
+      'assigned_courier_id': user.uid,
+      'assigned_courier_name': courierFullName,
+    });
+
+    // Create or update ContainerDelivery document
+    DocumentReference deliveryRef;
+    if (deliveryCheck.docs.isNotEmpty) {
+      // Update existing delivery record
+      deliveryRef = deliveryCheck.docs.first.reference;
+      batch.update(deliveryRef, {
+        'status': 'accepted',
         'confirmed_at': Timestamp.now(),
-        'confirmed_by': 'courier',
+        'confirmed_by': courierFullName,
+        'courier_id': user.uid,
         'proof_image': '',
         'remarks': 'Accepted by courier',
+        'updated_at': Timestamp.now(),
+        'consigneeName': containerData['consigneeName'] ?? 'N/A',
+        'consigneeAddress': containerData['consigneeAddress'] ?? 'N/A',
+        'consignorName': containerData['consignorName'] ?? 'N/A',
+        'consignorAddress': containerData['consignorAddress'] ?? 'N/A',
       });
-
-
-      // Create notification for admin
-      try {
-        await _firestore.collection('Notifications').add({
-          'userId': 'admin',
-          'type': 'delivery_assigned',
-          'message': 'Cargo ${cargoData['containerNo']} has been accepted by ${_getFullName()}',
-          'timestamp': Timestamp.now(),
-          'read': false,
-          'cargoId': cargoData['cargo_id'],
-          'containerNo': cargoData['containerNo'],
-        });
-      } catch (e) {
-        print('Error creating notification: $e');
-      }
-
-      // Refresh data
-      await _loadData();
-      
-      _showSuccessModal('Cargo accepted successfully!');
-    } catch (e) {
-      print('Error accepting cargo: $e');
-      _showErrorModal('Failed to accept cargo. Please try again.');
+    } else {
+      // Create new delivery record
+      deliveryRef = _firestore.collection('ContainerDelivery').doc();
+      batch.set(deliveryRef, {
+        'containerId': containerData['containerId'],
+        'courier_id': user.uid,
+        'status': 'accepted',
+        'confirmed_at': Timestamp.now(),
+        'confirmed_by': courierFullName,
+        'proof_image': '',
+        'remarks': 'Accepted by courier',
+        'created_at': Timestamp.now(),
+        'updated_at': Timestamp.now(),
+        'container_number': containerData['containerNumber'],
+        'seal_number': containerData['sealNumber'],
+        'bill_of_lading': containerData['billOfLading'],
+        'consigneeName': containerData['consigneeName'] ?? 'N/A',
+        'consigneeAddress': containerData['consigneeAddress'] ?? 'N/A',
+        'destination': containerData['destination'],
+        'priority': containerData['priority'],
+        'consignorName': containerData['consignorName'] ?? 'N/A',
+        'consignorAddress': containerData['consignorAddress'] ?? 'N/A',
+      });
     }
+
+    // Commit both updates in a single transaction
+    await batch.commit();
+
+    // Create notification for admin
+    try {
+      await _firestore.collection('Notifications').add({
+        'userId': 'admin',
+        'type': 'delivery_assigned',
+        'title': 'Delivery Accepted',
+        'message': 'Container ${containerData['containerNumber']} has been accepted by $courierFullName',
+        'timestamp': Timestamp.now(),
+        'read': false,
+        'containerId': containerData['containerId'],
+        'containerNumber': containerData['containerNumber'],
+        'courier_id': user.uid,
+        'courier_name': courierFullName,
+      });
+    } catch (e) {
+      print('Error creating notification: $e');
+      // Don't fail the whole process if notification fails
+    }
+
+    // Also update user's current delivery count
+    try {
+      await _firestore.collection('Couriers').doc(user.uid).update({
+        'current_deliveries': FieldValue.increment(1),
+        'last_activity': Timestamp.now(),
+      });
+    } catch (e) {
+      print('Error updating courier stats: $e');
+    }
+
+    // Refresh data
+    await _loadData();
+    
+    _showSuccessModal('Container accepted successfully! You can now track your delivery.');
+    
+  } catch (e) {
+    print('Error accepting container: $e');
+    _showErrorModal('Failed to accept container. Please try again.');
   }
+}
 
   String _getFullName() {
     String firstName = _userData['first_name'] ?? '';
@@ -454,6 +564,8 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
         return 'Pending';
       case 'assigned':
         return 'Assigned';
+      case 'accepted':
+        return 'Accepted';
       case 'in-progress':
       case 'in_transit':
         return 'In Progress';
@@ -476,6 +588,8 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
         return const Color(0xFFF59E0B);
       case 'assigned':
         return const Color(0xFF8B5CF6);
+      case 'accepted':
+        return const Color(0xFF6366F1);
       case 'in-progress':
       case 'in_transit':
         return const Color(0xFF6366F1);
@@ -509,120 +623,120 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
   }
 
   void _showSuccessModal(String message) {
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return Dialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-          child: Container(
-            padding: const EdgeInsets.all(24),
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [Colors.white, Color(0xFFFAFBFF)],
-              ),
-              borderRadius: BorderRadius.circular(20),
+  showDialog(
+    context: context,
+    builder: (BuildContext context) {
+      return Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        child: Container(
+          padding: const EdgeInsets.all(24),
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [Colors.white, Color(0xFFFAFBFF)],
             ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF10B981).withOpacity(0.1),
-                    shape: BoxShape.circle,
-                  ),
-                  child: const Icon(
-                    Icons.check_circle_rounded,
-                    color: Color(0xFF10B981),
-                    size: 50,
-                  ),
-                ),
-                const SizedBox(height: 16),
-                Text(
-                  message,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.w700,
-                    color: Color(0xFF1E293B),
-                  ),
-                ),
-                const SizedBox(height: 8),
-                const Text(
-                  "You can now track your delivery in real-time",
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 14,
-                    color: Color(0xFF64748B),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                // Additional Info Section
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFF0F9FF),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: const Color(0xFFE0F2FE)),
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(
-                        Icons.info_outline_rounded,
-                        color: Colors.blue[600],
-                        size: 16,
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          "Check the 'Track Your Deliveries' section for updates",
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: Colors.blue[600],
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 24),
-                ElevatedButton(
-                  onPressed: () => Navigator.of(context).pop(),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF10B981),
-                    foregroundColor: Colors.white,
-                    minimumSize: const Size(150, 48),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    elevation: 0,
-                  ),
-                  child: const Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.check_rounded, size: 20),
-                      SizedBox(width: 8),
-                      Text(
-                        'Got It',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
+            borderRadius: BorderRadius.circular(20),
           ),
-        );
-      },
-    );
-  }
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF10B981).withOpacity(0.1),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.check_circle_rounded,
+                  color: Color(0xFF10B981),
+                  size: 50,
+                ),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                message,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFF1E293B),
+                ),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                "Delivery status updated in both systems",
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 14,
+                  color: Color(0xFF64748B),
+                ),
+              ),
+              const SizedBox(height: 16),
+              // Additional Info Section
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF0F9FF),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: const Color(0xFFE0F2FE)),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.info_outline_rounded,
+                      color: Colors.blue[600],
+                      size: 16,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        "Container status: Accepted → Ready for pickup",
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.blue[600],
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 24),
+              ElevatedButton(
+                onPressed: () => Navigator.of(context).pop(),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF10B981),
+                  foregroundColor: Colors.white,
+                  minimumSize: const Size(150, 48),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  elevation: 0,
+                ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.check_rounded, size: 20),
+                    SizedBox(width: 8),
+                    Text(
+                      'Start Delivery',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    },
+  );
+} 
 
   void _showErrorModal(String message) {
     showDialog(
@@ -714,17 +828,17 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
     );
   }
 
-  void _debugCargoData() {
-    print('=== DEBUG CARGO DATA ===');
-    print('Available Cargos: ${_availableCargos.length}');
+  void _debugContainerData() {
+    print('=== DEBUG CONTAINER DATA ===');
+    print('Available Containers: ${_availableContainers.length}');
     print('In Progress Deliveries: ${_inProgressDeliveries.length}');
     
-    for (var cargo in _availableCargos) {
-      print('Available: ${cargo['containerNo']} - Status: ${cargo['status']} - ID: ${cargo['cargo_id']} - Sequence: ${cargo['sequence_number']}');
+    for (var container in _availableContainers) {
+      print('Available: ${container['containerNumber']} - Status: ${container['status']} - ID: ${container['containerId']} - Allocation: ${container['allocationStatus']} - Sequence: ${container['sequence_number']}');
     }
     
     for (var delivery in _inProgressDeliveries) {
-      print('In Progress: ${delivery['containerNo']} - Status: ${delivery['status']} - Sequence: ${delivery['sequence_number']}');
+      print('In Progress: ${delivery['containerNumber']} - Status: ${delivery['status']} - Sequence: ${delivery['sequence_number']}');
     }
     print('=== END DEBUG ===');
   }
@@ -733,7 +847,7 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
   Widget build(BuildContext context) {
     // Add this for debugging (remove after fixing)
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _debugCargoData();
+      _debugContainerData();
     });
     
     if (_isLoading) {
@@ -812,7 +926,7 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            "CARGO EXPRESS",
+                            "CONTAINER EXPRESS",
                             style: TextStyle(
                               fontSize: 18,
                               fontWeight: FontWeight.w800,
@@ -822,7 +936,7 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
                           ),
                           SizedBox(height: 2),
                           Text(
-                            "Fast Delivery",
+                            "Gothong Container Shipping Express",
                             style: TextStyle(
                               fontSize: 12,
                               color: Colors.white70,
@@ -963,15 +1077,15 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
               margin: const EdgeInsets.symmetric(horizontal: 16),
               child: Column(
                 children: [
-                  // First row: Cargos and Track
+                  // First row: Containers and Track
                   Row(
                     children: [
                       Expanded(
                         child: _buildActionCard(
-                          "Cargos",
+                          "Containers",
                           Icons.local_shipping,
                           const Color(0xFF3B82F6),
-                          _availableCargos.length.toString(),
+                          _availableContainers.length.toString(),
                           () {
                             Navigator.push(
                               context,
@@ -1048,12 +1162,12 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
 
             const SizedBox(height: 20),
 
-            // Available Cargos Section
-            if (_availableCargos.isNotEmpty)
-              _buildCargoSection(
+            // Available Containers Section
+            if (_availableContainers.isNotEmpty)
+              _buildContainerSection(
                 "Available Deliveries",
-                _availableCargos,
-                _availableCargos.length,
+                _availableContainers,
+                _availableContainers.length,
                 true, // isAvailable
               ),
 
@@ -1061,7 +1175,7 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
 
             // In Progress Deliveries Section
             if (_inProgressDeliveries.isNotEmpty)
-              _buildCargoSection(
+              _buildContainerSection(
                 "Track Your Deliveries",
                 _inProgressDeliveries,
                 _inProgressDeliveries.length,
@@ -1077,75 +1191,91 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
   }
 
   Widget _buildActionCard(String title, IconData icon, Color color, String count, VoidCallback onTap) {
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(16),
-        onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: color.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Icon(icon, color: color, size: 24),
-                  ),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: color.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Text(
-                      count,
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: color,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Text(
-                title,
-                style: const TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: Color(0xFF1E293B),
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                title == "Cargos" ? "Available for delivery" : 
-                title == "Track" ? "Track your cargo" :
-                title == "Delivery History" ? "View past delivery" : "View performance",
-                style: const TextStyle(
-                  fontSize: 12,
-                  color: Color(0xFF64748B),
-                ),
-              ),
-            ],
+  return Material(
+    color: Colors.transparent,
+    child: InkWell(
+      borderRadius: BorderRadius.circular(16),
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.all(24),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.1),
+              blurRadius: 10,
+              offset: const Offset(0, 4),
+            ),
+            BoxShadow(
+              color: Colors.black.withOpacity(0.05),
+              blurRadius: 4,
+              offset: const Offset(0, 2),
+            ),
+          ],
+          border: Border.all(
+            color: Colors.grey.withOpacity(0.1),
+            width: 1,
           ),
         ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: color.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Icon(icon, color: color, size: 24),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: color.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    count,
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: color,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              title,
+              style: const TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF1E293B),
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              title == "Containers" ? "Available for delivery" : 
+              title == "Track" ? "Track your container" :
+              title == "Delivery History" ? "View past delivery" : "View performance",
+              style: const TextStyle(
+                fontSize: 12,
+                color: Color(0xFF64748B),
+              ),
+            ),
+          ],
+        ),
       ),
-    );
-  }
+    ),
+  );
+}
 
-  Widget _buildCargoSection(String title, List<Map<String, dynamic>> deliveries, int count, bool isAvailable) {
+  Widget _buildContainerSection(String title, List<Map<String, dynamic>> deliveries, int count, bool isAvailable) {
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 16),
       padding: const EdgeInsets.all(20),
@@ -1199,7 +1329,7 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
           ...deliveries.take(3).map((delivery) {
             return Column(
               children: [
-                _buildCargoDeliveryCard(delivery, isAvailable),
+                _buildContainerDeliveryCard(delivery, isAvailable),
                 if (deliveries.indexOf(delivery) < deliveries.length - 1 && deliveries.indexOf(delivery) < 2)
                   const SizedBox(height: 12),
               ],
@@ -1210,16 +1340,19 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
     );
   }
 
-  Widget _buildCargoDeliveryCard(Map<String, dynamic> delivery, bool isAvailable) {
+  Widget _buildContainerDeliveryCard(Map<String, dynamic> delivery, bool isAvailable) {
     // Check if this delivery is already accepted/in-progress
     final status = delivery['status']?.toString().toLowerCase() ?? 'pending';
-    final bool isAlreadyAccepted = status == 'in-progress' || 
-                                  status == 'in_transit' || 
-                                  status == 'assigned';
+    final bool isAlreadyAccepted = status == 'accepted' || status == 'in-progress' || 
+                                  status == 'in_transit' || status == 'assigned';
     
-    // Check if this cargo was cancelled by the current courier
+    // Check if this container was cancelled by the current courier
     final bool isCancelled = delivery['is_cancelled'] == true || 
                             status == 'cancelled';
+    
+    // Check allocation status
+    final String allocationStatus = delivery['allocationStatus']?.toString().toLowerCase() ?? '';
+    final bool isReleased = allocationStatus == 'released';
     
     return Container(
       padding: const EdgeInsets.all(16),
@@ -1236,7 +1369,7 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
             children: [
               Expanded(
                 child: Text(
-                  "Container: ${delivery['containerNo'] ?? 'N/A'}",
+                  "${delivery['containerNumber'] ?? 'N/A'}",
                   style: const TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.w600,
@@ -1261,6 +1394,39 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
               ),
             ],
           ),
+          
+          // Show allocation status info
+          if (isAvailable && !isReleased)
+            Container(
+              width: double.infinity,
+              margin: const EdgeInsets.only(top: 8),
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFFFBEB),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: const Color(0xFFFEF3C7)),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.info_outline_rounded,
+                    color: Colors.amber[700],
+                    size: 16,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      "Waiting for release - Container not yet ready for delivery",
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.amber[700],
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           
           // Show cancellation warning if applicable
           if (isCancelled && isAvailable)
@@ -1302,7 +1468,7 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
               const SizedBox(width: 4),
               Expanded(
                 child: Text(
-                  "${delivery['pickupLocation'] ?? 'Port Terminal'} → ${delivery['destination'] ?? 'Delivery Point'}",
+                  "${delivery['location'] ?? DECLARED_ORIGIN} → ${delivery['destination'] ?? 'Delivery Point'}",
                   style: const TextStyle(
                     fontSize: 14,
                     color: Color(0xFF64748B),
@@ -1337,13 +1503,12 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
                   onPressed: () {
                     final status = delivery['status']?.toString().toLowerCase() ?? 'pending';
                     
-                    if (status == 'in-progress' || status == 'in_transit') {
-                      // Navigate to live location for in-progress deliveries
+                    if (status == 'accepted' || status == 'in-progress' || status == 'in_transit') {
+                      // Navigate to live location for accepted/in-progress deliveries
                       Navigator.push(
                         context,
                         MaterialPageRoute(
-                          builder: (context) => LiveLocationPage(
-                            cargoData: delivery,
+                          builder: (context) => LiveMapPage(
                           ),
                         ),
                       );
@@ -1353,7 +1518,7 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
                         context,
                         MaterialPageRoute(
                           builder: (context) => StatusUpdatePage(
-                            cargoData: delivery,
+                            containerData: delivery,
                           ),
                         ),
                       );
@@ -1379,7 +1544,7 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
                     padding: const EdgeInsets.symmetric(vertical: 12),
                   ),
                   child: Text(
-                    status == 'in-progress' || status == 'in_transit' 
+                    status == 'accepted' || status == 'in-progress' || status == 'in_transit' 
                         ? 'Track Now' 
                         : status == 'delayed'
                             ? 'Update Status'
@@ -1388,12 +1553,17 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
                   ),
                 ),
               ),
-              if (isAvailable && !isAlreadyAccepted && !isCancelled)
+              // Only show Accept button if:
+              // - Container is available
+              // - Not already accepted
+              // - Not cancelled
+              // - Allocation status is 'released'
+              if (isAvailable && !isAlreadyAccepted && !isCancelled && isReleased)
                 const SizedBox(width: 8),
-              if (isAvailable && !isAlreadyAccepted && !isCancelled)
+              if (isAvailable && !isAlreadyAccepted && !isCancelled && isReleased)
                 Expanded(
                   child: ElevatedButton(
-                    onPressed: () => _acceptCargoDelivery(delivery),
+                    onPressed: () => _acceptContainerDelivery(delivery),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFF10B981),
                       foregroundColor: Colors.white,
@@ -1404,6 +1574,27 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
                     ),
                     child: const Text(
                       'Accept',
+                      style: TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                ),
+              // Show disabled accept button for non-released tasks
+              if (isAvailable && !isAlreadyAccepted && !isCancelled && !isReleased)
+                const SizedBox(width: 8),
+              if (isAvailable && !isAlreadyAccepted && !isCancelled && !isReleased)
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: null, // Disabled button
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.grey[400],
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    child: const Text(
+                      'Not Released',
                       style: TextStyle(fontWeight: FontWeight.w600),
                     ),
                   ),
@@ -1491,10 +1682,10 @@ class _HomePageState extends State<HomePage> with AutoRefreshMixin {
             label: 'Home',
           ),
           BottomNavigationBarItem(
-            icon: Icon(Icons.schedule_outlined),
-            activeIcon: Icon(Icons.schedule),
-            label: 'Schedule',
-          ),
+          icon: Icon(Icons.format_list_bulleted_outlined),
+          activeIcon: Icon(Icons.format_list_bulleted),
+          label: 'Tasks',
+        ),
           BottomNavigationBarItem(
             icon: Icon(Icons.map_outlined),
             activeIcon: Icon(Icons.map),
@@ -1543,27 +1734,20 @@ mixin AutoRefreshMixin<T extends StatefulWidget> on State<T> {
   }
 }
 
-void setupCargoListener(Function refreshCallback) {
+void setupContainerListener(Function refreshCallback) {
   FirebaseFirestore.instance
-      .collection('Cargo')
+      .collection('Containers')
       .snapshots()
       .listen((_) => refreshCallback());
 }
 
 void setupDeliveryListener(String userId, Function refreshCallback) {
   FirebaseFirestore.instance
-      .collection('CargoDelivery')
+      .collection('ContainerDelivery')
       .where('courier_id', isEqualTo: userId)
       .snapshots()
       .listen((snapshot) {
-        // Check if any delivery was cancelled
-        bool hasCancellation = snapshot.docs.any((doc) {
-          final data = doc.data() as Map<String, dynamic>;
-          return data['status']?.toString().toLowerCase() == 'cancelled';
-        });
-        
-        if (hasCancellation) {
-          refreshCallback();
-        }
+        // Refresh when any delivery status changes (not just cancellations)
+        refreshCallback();
       });
 }

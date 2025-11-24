@@ -12,35 +12,37 @@ import 'package:image_picker/image_picker.dart';
 import 'dart:io';
 import 'package:camera/camera.dart';
 
+// Declared origin constant - Gothong Port in Cebu
+const String DECLARED_ORIGIN = "Don Carlos A. Gothong Port Centre, Quezon Boulevard, Pier 4, Cebu City";
+
 class LiveLocationPage extends StatefulWidget {
-  final Map<String, dynamic>? cargoData;
+  final Map<String, dynamic>? containerData;
 
   const LiveLocationPage({
     super.key,
-    this.cargoData,
+    this.containerData,
   });
 
-  // Getters for backward compatibility
-  String get cargoId {
-    return cargoData?['cargo_id'] ?? cargoData?['id'] ?? '';
+  String get containerId {
+    return containerData?['id'] ?? containerData?['containerId'] ?? '';
   }
 
   String get containerNo {
-    return cargoData?['containerNo'] ?? 'CONT-${cargoData?['item_number'] ?? 'N/A'}';
+    return containerData?['containerNumber'] ?? 'N/A';
   }
 
   String get time {
-    return cargoData?['confirmed_at'] != null 
-        ? _formatTime(cargoData!['confirmed_at'] as Timestamp)
+    return containerData?['scannedAt'] != null 
+        ? _formatTime(containerData!['scannedAt'] as Timestamp)
         : '';
   }
 
   String get pickup {
-    return cargoData?['origin'] ?? cargoData?['pickupLocation'] ?? 'Port Terminal';
+    return DECLARED_ORIGIN;
   }
 
   String get destination {
-    return cargoData?['destination'] ?? 'Delivery Point';
+    return containerData?['destination'] ?? 'Delivery Point';
   }
 
   String _formatTime(Timestamp timestamp) {
@@ -58,11 +60,12 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final ImagePicker _imagePicker = ImagePicker();
-  Map<String, dynamic>? _cargoData;
+  Map<String, dynamic>? _containerData;
   Map<String, dynamic>? _deliveryData;
   bool _isLoading = true;
   DateTime? _selectedDelayTime;
   LatLng? _courierLocation;
+  LatLng? _actualDestinationLocation;
   List<LatLng> _deliveryRoute = [];
   Timer? _locationUpdateTimer;
   String _eta = 'Calculating...';
@@ -73,9 +76,8 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
   File? _proofOfDeliveryImage;
   bool _hasProofImage = false;
 
-  // Local distance calculation method
   double _calculateDistance(LatLng point1, LatLng point2) {
-    const double earthRadius = 6371.0; // Earth's radius in kilometers
+    const double earthRadius = 6371.0;
     
     final double lat1 = point1.latitude * (pi / 180.0);
     final double lon1 = point1.longitude * (pi / 180.0);
@@ -96,7 +98,7 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
   @override
   void initState() {
     super.initState();
-    _loadCargoAndDeliveryData();
+    _loadContainerAndDeliveryData();
     _checkExistingProofImage();
   }
 
@@ -108,11 +110,11 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
 
   Future<void> _checkExistingProofImage() async {
     try {
-      final cargoId = widget.cargoId;
-      if (cargoId.isNotEmpty) {
+      final containerId = widget.containerId;
+      if (containerId.isNotEmpty) {
         QuerySnapshot proofQuery = await _firestore
             .collection('proof_image')
-            .where('cargo_id', isEqualTo: cargoId)
+            .where('container_id', isEqualTo: containerId)
             .limit(1)
             .get();
         
@@ -120,7 +122,6 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
           _hasProofImage = proofQuery.docs.isNotEmpty;
         });
         
-        // Also check if proof image URL exists in delivery data
         if (_deliveryData != null && _deliveryData!['proof_image_url'] != null) {
           setState(() {
             _hasProofImage = true;
@@ -136,42 +137,88 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
   }
 
   void _startLocationUpdates() {
-    // Remove automatic movement - just update ETA periodically
-    _locationUpdateTimer = Timer.periodic(const Duration(seconds: 30), (timer) {
-      _updateETA();
+    _locationUpdateTimer?.cancel();
+    _locationUpdateTimer = Timer.periodic(const Duration(seconds: 2), (timer) {
+      _animateCourierAlongRoute();
     });
   }
 
-  Future<void> _updateCourierLocation() async {
-      _updateETA();
+  void _animateCourierAlongRoute() {
+  if (_deliveryRoute.isEmpty || _status.toLowerCase() == 'delivered') {
+    print('DEBUG: Cannot animate - route empty or delivered');
+    return;
   }
 
-  LatLng _getCurrentLocationOnRoute() {
-    if (_deliveryRoute.isEmpty) return const LatLng(14.5995, 120.9842);
+  setState(() {
+    _progress += 0.01;
     
-    final totalDistance = _calculateTotalRouteDistance();
-    final targetDistance = totalDistance * _progress;
-    
-    double accumulatedDistance = 0.0;
-    
-    for (int i = 0; i < _deliveryRoute.length - 1; i++) {
-      final segmentDistance = _calculateDistance(
-        _deliveryRoute[i], 
-        _deliveryRoute[i + 1]
-      );
-      
-      if (accumulatedDistance + segmentDistance >= targetDistance) {
-        final ratio = (targetDistance - accumulatedDistance) / segmentDistance;
-        return LatLng(
-          _deliveryRoute[i].latitude + (_deliveryRoute[i + 1].latitude - _deliveryRoute[i].latitude) * ratio,
-          _deliveryRoute[i].longitude + (_deliveryRoute[i + 1].longitude - _deliveryRoute[i].longitude) * ratio,
-        );
-      }
-      accumulatedDistance += segmentDistance;
+    if (_progress >= 1.0) {
+      _progress = 1.0;
+      print('DEBUG: Courier reached destination');
     }
     
-    return _deliveryRoute.last;
+    _courierLocation = _getCurrentLocationOnRoute();
+    print('DEBUG: Courier location updated to: ${_courierLocation!.latitude}, ${_courierLocation!.longitude}');
+  });
+  
+  // Debug info
+  if (_progress < 0.1) { // Only show debug for first few updates
+    _debugLocationInfo();
   }
+  
+  _updateETA();
+}
+
+  // Small helper to print debug information about the route and courier.
+  // This method was missing and caused a compile error where it was called.
+  void _debugLocationInfo() {
+    try {
+      final int pointCount = _deliveryRoute.length;
+      final double totalDistance = _calculateTotalRouteDistance();
+      final String progressPct = (_progress * 100).toStringAsFixed(1);
+      print('DEBUG: Route points: $pointCount, totalDistance: ${totalDistance.toStringAsFixed(3)} km, progress: $progressPct%');
+      if (_courierLocation != null) {
+        print('DEBUG: Courier at ${_courierLocation!.latitude}, ${_courierLocation!.longitude}');
+      } else {
+        print('DEBUG: Courier location is null');
+      }
+    } catch (e) {
+      print('DEBUG: _debugLocationInfo error: $e');
+    }
+  }
+
+LatLng _getCurrentLocationOnRoute() {
+  if (_deliveryRoute.isEmpty) {
+    print('WARNING: Delivery route is empty, using DECLARED_ORIGIN as fallback');
+    return const LatLng(10.3119, 123.8859); // Gothong Port coordinates
+  }
+  
+  final totalDistance = _calculateTotalRouteDistance();
+  final targetDistance = totalDistance * _progress;
+  
+  double accumulatedDistance = 0.0;
+  
+  for (int i = 0; i < _deliveryRoute.length - 1; i++) {
+    final segmentDistance = _calculateDistance(
+      _deliveryRoute[i], 
+      _deliveryRoute[i + 1]
+    );
+    
+    if (accumulatedDistance + segmentDistance >= targetDistance) {
+      final ratio = (targetDistance - accumulatedDistance) / segmentDistance;
+      final currentLocation = LatLng(
+        _deliveryRoute[i].latitude + (_deliveryRoute[i + 1].latitude - _deliveryRoute[i].latitude) * ratio,
+        _deliveryRoute[i].longitude + (_deliveryRoute[i + 1].longitude - _deliveryRoute[i].longitude) * ratio,
+      );
+      return currentLocation;
+    }
+    accumulatedDistance += segmentDistance;
+  }
+  
+  return _deliveryRoute.last;
+}
+
+  
 
   double _calculateTotalRouteDistance() {
     double total = 0.0;
@@ -190,28 +237,36 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
     }
 
     if (_progress >= 1.0) {
+      final timeFormat = DateFormat('h:mm a');
+      final arrivalTime = DateTime.now().toUtc().add(const Duration(hours: 8));
       setState(() {
-        _eta = 'Arrived';
+        _eta = timeFormat.format(arrivalTime);
       });
       return;
     }
 
-    final remainingDistance = (_routeInfo!['distanceValue'] as double) * (1 - _progress);
-    final averageSpeed = 50.0; // km/h
-    final remainingHours = remainingDistance / averageSpeed;
-    
-    // Use Philippines timezone
-    final now = DateTime.now().toUtc().add(const Duration(hours: 8)); // UTC+8 for Philippines
-    final etaTime = now.add(Duration(
-      hours: remainingHours.toInt(), 
-      minutes: ((remainingHours % 1) * 60).toInt()
-    ));
-  
-    // Format with Philippines timezone
-    final phTimeFormat = DateFormat('hh:mm a');
-    setState(() {
-      _eta = phTimeFormat.format(etaTime);
-    });
+    try {
+      final totalDistance = _routeInfo!['distanceValue'] as double? ?? 0.0;
+      final totalDurationMinutes = _routeInfo!['durationValue'] as double? ?? 0.0;
+      
+      // Calculate remaining time based on progress
+      final remainingMinutes = totalDurationMinutes * (1 - _progress);
+      
+      // Calculate ETA time (Philippines time = UTC+8)
+      final now = DateTime.now().toUtc().add(const Duration(hours: 8));
+      final etaTime = now.add(Duration(minutes: remainingMinutes.toInt()));
+      
+      // Format as time (e.g., "2:30 PM")
+      final timeFormat = DateFormat('h:mm a');
+      setState(() {
+        _eta = timeFormat.format(etaTime);
+      });
+    } catch (e) {
+      print('Error updating ETA: $e');
+      setState(() {
+        _eta = 'Calculating...';
+      });
+    }
   }
 
   Future<void> _loadDriverName() async {
@@ -252,216 +307,396 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
     }
   }
 
-  Future<void> _loadCargoAndDeliveryData() async {
-    try {
-      if (widget.cargoData != null) {
-        _cargoData = widget.cargoData;
-        
-        final cargoId = widget.cargoId;
-        if (cargoId.isNotEmpty) {
-          QuerySnapshot deliveryQuery = await _firestore
-              .collection('CargoDelivery')
-              .where('cargo_id', isEqualTo: cargoId)
+  Future<void> _loadContainerAndDeliveryData() async {
+  try {
+    // Try to derive containerId from widget first (handles case where caller passed container data)
+    String containerId = widget.containerId;
+    print('DEBUG: initial widget containerId: "$containerId"');
+    print('DEBUG: initial widget.containerData: ${widget.containerData}');
+
+    // If widget.containerData contains containerNumber but no id, set containerId to that for lookups
+    if ((containerId == null || containerId.isEmpty) && widget.containerData != null) {
+      final w = widget.containerData!;
+      final altId = (w['containerId'] ?? w['container_id'] ?? w['id'] ?? w['containerNumber'] ?? w['container_no'])?.toString();
+      if (altId != null && altId.isNotEmpty) {
+        containerId = altId;
+        print('DEBUG: derived containerId from widget data: $containerId');
+      }
+    }
+
+    if (containerId == null || containerId.isEmpty) {
+      print('ERROR: Container ID still empty after checking widget data');
+      _showErrorModal('Container ID is missing');
+      setState(() => _isLoading = false);
+      return;
+    }
+
+    // Attempt to fetch container doc by id
+    print('DEBUG: Looking for container document with ID: $containerId');
+    DocumentSnapshot containerDoc = await _firestore.collection('Containers').doc(containerId).get();
+
+    if (containerDoc.exists) {
+      _containerData = containerDoc.data() as Map<String, dynamic>;
+      print('DEBUG: Container document loaded from Containers/${containerId}');
+    } else {
+      print('DEBUG: Container doc not found by ID; trying alternate queries...');
+      // If not found by doc ID, try searching by containerNumber fields
+      QuerySnapshot containerQuery = await _firestore
+          .collection('Containers')
+          .where('containerNumber', isEqualTo: containerId)
+          .limit(1)
+          .get();
+
+      if (containerQuery.docs.isEmpty) {
+        containerQuery = await _firestore
+            .collection('Containers')
+            .where('container_no', isEqualTo: containerId)
+            .limit(1)
+            .get();
+      }
+
+      if (containerQuery.docs.isNotEmpty) {
+        _containerData = containerQuery.docs.first.data() as Map<String, dynamic>;
+        print('DEBUG: Container document found by containerNumber query: ${_containerData?['containerNumber']}');
+      } else if (widget.containerData != null) {
+        // Use widget-provided data as fallback (caller likely passed the accepted container)
+        _containerData = widget.containerData;
+        print('DEBUG: Using widget.containerData as fallback: $_containerData');
+      } else {
+        print('WARNING: No container document or widget data available for id: $containerId');
+      }
+    }
+
+    // Fetch ContainerDelivery record. Prefer container_id/containerId, but try containerNumber as alternate key.
+    QuerySnapshot deliveryQuery = await _firestore
+        .collection('ContainerDelivery')
+        .where('containerId', isEqualTo: containerId)
+        .limit(1)
+        .get();
+
+    if (deliveryQuery.docs.isEmpty) {
+      print('DEBUG: No ContainerDelivery found by containerId, trying container_id');
+      deliveryQuery = await _firestore
+          .collection('ContainerDelivery')
+          .where('container_id', isEqualTo: containerId)
+          .limit(1)
+          .get();
+    }
+
+    // If still empty, try searching by containerNumber coming from container data
+    if (deliveryQuery.docs.isEmpty && _containerData != null) {
+      final cnum = _containerData!['containerNumber'] ?? _containerData!['container_no'] ?? _containerData!['containerNo'];
+      if (cnum != null) {
+        print('DEBUG: Trying ContainerDelivery query by container number: $cnum');
+        deliveryQuery = await _firestore
+            .collection('ContainerDelivery')
+            .where('container_no', isEqualTo: cnum)
+            .limit(1)
+            .get();
+
+        if (deliveryQuery.docs.isEmpty) {
+          deliveryQuery = await _firestore
+              .collection('ContainerDelivery')
+              .where('containerNumber', isEqualTo: cnum)
               .limit(1)
               .get();
-          
-          if (deliveryQuery.docs.isNotEmpty) {
-            _deliveryData = deliveryQuery.docs.first.data() as Map<String, dynamic>;
-            await _loadDriverName();
-          } else {
-            // No delivery record exists yet
-            _deliveryData = {'status': 'pending'};
-            setState(() {
-              _driverName = 'Not Assigned';
-            });
-          }
         }
+      }
+    }
 
-        await _generateRealisticDeliveryRoute();
-        _startLocationUpdates();
-        
+    if (deliveryQuery.docs.isNotEmpty) {
+      _deliveryData = deliveryQuery.docs.first.data() as Map<String, dynamic>;
+      print('DEBUG: Delivery data loaded: $_deliveryData');
+      await _loadDriverName();
+    } else {
+      print('WARNING: No delivery record found; using container destination as fallback if available');
+      final containerDestination = _containerData?['destination'] ?? widget.destination ?? '';
+      if (containerDestination == null || containerDestination.isEmpty) {
+        _showErrorModal('No delivery record and no destination found in container data. Please check your data.');
         setState(() {
           _isLoading = false;
         });
         return;
       }
-
-      final cargoId = widget.cargoId;
-      if (cargoId.isNotEmpty) {
-        DocumentSnapshot cargoDoc = await _firestore
-            .collection('Cargo')
-            .doc(cargoId)
-            .get();
-        
-        if (cargoDoc.exists) {
-          _cargoData = cargoDoc.data() as Map<String, dynamic>;
-        }
-
-        QuerySnapshot deliveryQuery = await _firestore
-            .collection('CargoDelivery')
-            .where('cargo_id', isEqualTo: cargoId)
-            .limit(1)
-            .get();
-        
-        if (deliveryQuery.docs.isNotEmpty) {
-          _deliveryData = deliveryQuery.docs.first.data() as Map<String, dynamic>;
-          await _loadDriverName();
-        } else {
-          // No delivery record exists yet
-          _deliveryData = {'status': 'pending'};
-          setState(() {
-            _driverName = 'Not Assigned';
-          });
-        }
-
-        await _generateRealisticDeliveryRoute();
-        _startLocationUpdates();
-      }
-
-      setState(() {
-        _isLoading = false;
-      });
-    } catch (e) {
-      print('Error loading cargo and delivery data: $e');
-      setState(() {
-        _isLoading = false;
-        _driverName = 'Assigned Driver';
-      });
-    }
-  }
-
-  Future<void> _generateRealisticDeliveryRoute() async {
-  try {
-    // Get coordinates for pickup and destination
-    final pickupCoords = await OSMService.geocodeAddress(_pickup);
-    final destinationCoords = await OSMService.geocodeAddress(_destination);
-    
-    LatLng pickupLocation;
-    LatLng destinationLocation;
-    
-    if (pickupCoords != null) {
-      pickupLocation = LatLng(pickupCoords['lat']!, pickupCoords['lng']!);
-    } else {
-      // Fallback to Manila coordinates
-      pickupLocation = const LatLng(14.5832, 120.9695);
-    }
-    
-    if (destinationCoords != null) {
-      destinationLocation = LatLng(destinationCoords['lat']!, destinationCoords['lng']!);
-    } else {
-      // Fallback to Batangas coordinates
-      destinationLocation = const LatLng(13.7565, 121.0583);
+      _deliveryData = {
+        'status': 'pending',
+        'destination': containerDestination,
+      };
+      print('DEBUG: Built minimal delivery data from container: $_deliveryData');
+      setState(() => _driverName = 'Not Assigned');
     }
 
-    // Get real route from OSM
-    _routeInfo = await OSMService.getRouteWithGeometry(pickupLocation, destinationLocation);
-    
-    if (_routeInfo != null && _routeInfo!['routePoints'] != null) {
-      _deliveryRoute = List<LatLng>.from(_routeInfo!['routePoints']);
-    } else {
-      // Fallback route
-      _deliveryRoute = _generateFallbackRoute(pickupLocation, destinationLocation);
-    }
+    // Generate route after delivery data loaded
+    await _generateRealisticDeliveryRoute();
 
-    // Place courier 1km from pickup location (static position)
-    _initializeCourierLocationNearPickup(pickupLocation);
-    
-  } catch (e) {
-    print('Error generating route: $e');
-    // Fallback route
-    final pickupLocation = const LatLng(14.5832, 120.9695);
-    final destinationLocation = const LatLng(13.7565, 121.0583);
-    _deliveryRoute = _generateFallbackRoute(pickupLocation, destinationLocation);
-    _initializeCourierLocationNearPickup(pickupLocation);
+    setState(() => _isLoading = false);
+  } catch (e, st) {
+    print('Error loading container/delivery data: $e\n$st');
+    _showErrorModal('Error loading data: $e');
+    setState(() {
+      _isLoading = false;
+      _driverName = 'Assigned Driver';
+    });
   }
 }
 
-  void _initializeCourierLocationNearPickup(LatLng pickupLocation) {
-    // Place courier 1km away from pickup location along the route
-    if (_deliveryRoute.length > 1) {
-      // Calculate a point 1km from pickup along the route
-      const double initialDistance = 1.0; // 1km
-      double accumulatedDistance = 0.0;
-      
-      for (int i = 0; i < _deliveryRoute.length - 1; i++) {
-        final segmentDistance = _calculateDistance(
-          _deliveryRoute[i], 
-          _deliveryRoute[i + 1]
-        );
-        
-       if (accumulatedDistance + segmentDistance >= initialDistance) {
-        final ratio = (initialDistance - accumulatedDistance) / segmentDistance;
-        final initialLocation = LatLng(
-          _deliveryRoute[i].latitude + (_deliveryRoute[i + 1].latitude - _deliveryRoute[i].latitude) * ratio,
-          _deliveryRoute[i].longitude + (_deliveryRoute[i + 1].longitude - _deliveryRoute[i].longitude) * ratio,
-        );
-          
-          setState(() {
-          _courierLocation = initialLocation;
-          _progress = initialDistance / _calculateTotalRouteDistance();
-        });
-        
-        // Calculate initial ETA immediately after setting position
-        _updateETA();
-        return;
-      }
-        accumulatedDistance += segmentDistance;
+// 3) improved route generation with validation & secondary geocode attempts
+Future<void> _generateRealisticDeliveryRoute() async {
+  try {
+    if (_deliveryData == null) throw Exception('Delivery data missing');
+
+    String destinationAddress = (_deliveryData!['destination'] ?? _containerData?['destination'] ?? '').toString().trim();
+    if (destinationAddress.isEmpty) {
+      print('DEBUG: Destination empty, attempting to extract coordinates from delivery record if any');
+      // try to use lat/lng fields if present in delivery document
+      final lat = _deliveryData?['destination_lat'] ?? _deliveryData?['lat'];
+      final lng = _deliveryData?['destination_lng'] ?? _deliveryData?['lng'];
+      if (lat != null && lng != null) {
+        _actualDestinationLocation = LatLng(double.parse(lat.toString()), double.parse(lng.toString()));
+        print('DEBUG: Using coordinates from delivery data: $_actualDestinationLocation');
+      } else {
+        // fallback address
+        destinationAddress = 'Cebu City, Philippines';
+        print('DEBUG: destinationAddress empty -> using fallback "$destinationAddress"');
       }
     }
-    
-    // Fallback: place near pickup location
+
+    final LatLng pickupLocation = const LatLng(10.3119, 123.8859);
+    print('DEBUG: pickupLocation forced to Gothong Port: $pickupLocation');
+
+    LatLng destinationLocation;
+    if (_actualDestinationLocation != null) {
+      destinationLocation = _actualDestinationLocation!;
+    } else {
+      // First try standard geocode
+      print('DEBUG: geocoding destinationAddress: "$destinationAddress"');
+      final destinationCoords = await OSMService.geocodeAddress(destinationAddress);
+
+      // Secondary attempt: append ", Cebu" if geocode fails or returns a very nearby point
+      Map<String, double>? coords = destinationCoords;
+      if (coords == null) {
+        final secAddress = destinationAddress.contains('Cebu') ? destinationAddress : '$destinationAddress, Cebu';
+        print('DEBUG: primary geocode failed, trying secondary address: "$secAddress"');
+        coords = await OSMService.geocodeAddress(secAddress);
+      }
+
+      // If still null, try to extract coords from delivery data
+      if (coords == null && _deliveryData != null) {
+        final lat = _deliveryData?['destination_lat'] ?? _deliveryData?['lat'];
+        final lng = _deliveryData?['destination_lng'] ?? _deliveryData?['lng'];
+        if (lat != null && lng != null) {
+          coords = {'lat': double.parse(lat.toString()), 'lng': double.parse(lng.toString())};
+          print('DEBUG: extracted coords from delivery data: $coords');
+        }
+      }
+
+      if (coords != null) {
+        destinationLocation = LatLng(coords['lat']!, coords['lng']!);
+        print('DEBUG: resolved destinationLocation: $destinationLocation');
+      } else {
+        // use a distinct fallback far from Gothong port so map isn't locked near pickup
+        print('WARNING: geocoding failed entirely, using Toledo City fallback to ensure route spans distance');
+        destinationLocation = const LatLng(10.3797, 123.6393);
+      }
+    }
+
+    // Ask OSM for route geometry
+    print('DEBUG: requesting route geometry from $pickupLocation to $destinationLocation');
+    _routeInfo = await OSMService.getRouteWithGeometry(pickupLocation, destinationLocation);
+
+    bool haveValidRoutePoints = false;
+    if (_routeInfo != null && _routeInfo!['routePoints'] != null) {
+      final points = List<LatLng>.from(_routeInfo!['routePoints']);
+      print('DEBUG: raw routePoints length = ${points.length}');
+      // validate points: need at least 2 distinct points and end not equal start
+      if (points.length >= 2) {
+        // quick check that route spans distance (not identical coords)
+        final dist = _calculateDistance(points.first, points.last);
+        print('DEBUG: route start->end distance = ${dist} km');
+        if (dist > 0.01) { // at least ~10 meters
+          _deliveryRoute = points;
+          haveValidRoutePoints = true;
+        } else {
+          print('DEBUG: route start and end too close (likely invalid).');
+        }
+      } else {
+        print('DEBUG: routePoints length <2');
+      }
+    } else {
+      print('DEBUG: no routeInfo.routePoints returned from OSMService');
+    }
+
+    if (!haveValidRoutePoints) {
+      // If route invalid, construct a deterministic linear route that starts at pickup and goes to destination
+      _deliveryRoute = _generateFallbackRoute(pickupLocation, destinationLocation);
+      print('DEBUG: generated fallback route with ${_deliveryRoute.length} points');
+    } else {
+      // Ensure route starts at exact pickup coordinate (replace or insert)
+      final double startDistance = _calculateDistance(pickupLocation, _deliveryRoute.first);
+      const double thresholdKm = 0.05;
+      if (startDistance <= thresholdKm) {
+        _deliveryRoute[0] = pickupLocation;
+      } else {
+        _deliveryRoute.insert(0, pickupLocation);
+      }
+    }
+
+    setState(() => _actualDestinationLocation = destinationLocation);
+
+    // Force courier to declared origin and start animation
+    _initializeCourierLocationNearPickup(pickupLocation);
+  } catch (e, st) {
+    print('ERROR in _generateRealisticDeliveryRoute: $e\n$st');
+    // fallback simple route
+    final LatLng pickupLocation = const LatLng(10.3119, 123.8859);
+    final LatLng destinationLocation = const LatLng(10.3157, 123.8854);
+    _deliveryRoute = _generateFallbackRoute(pickupLocation, destinationLocation);
     setState(() {
-      _courierLocation = LatLng(
-        pickupLocation.latitude + 0.009, // ~1km north
-        pickupLocation.longitude
-      );
-      _progress = 0.1;
+      _actualDestinationLocation = destinationLocation;
     });
-  
-    // Calculate initial ETA for fallback position
-    _updateETA();
+    _initializeCourierLocationNearPickup(pickupLocation);
+    _showErrorModal('Route generation failed, using default route from Gothong Port');
+    setState(() => _isLoading = false);
   }
+}
+
+
+  // Remove duplicate or extremely close consecutive points at the start of the route
+  void _removeDuplicateStartPoints() {
+    if (_deliveryRoute.length < 2) return;
+    try {
+      final LatLng first = _deliveryRoute[0];
+      int removeCount = 0;
+      for (int i = 1; i < _deliveryRoute.length; i++) {
+        final double d = _calculateDistance(first, _deliveryRoute[i]);
+        if (d < 0.01) { // 10 meters
+          removeCount++;
+        } else {
+          break;
+        }
+      }
+      if (removeCount > 0) {
+        _deliveryRoute.removeRange(1, 1 + removeCount);
+        print('DEBUG: Removed $removeCount near-duplicate start points');
+      }
+    } catch (e) {
+      print('DEBUG: _removeDuplicateStartPoints error: $e');
+    }
+  }
+
+  void _initializeCourierLocationNearPickup(LatLng pickupLocation) {
+  // Force courier to start at exact declared pickup coordinates regardless of route first point
+  setState(() {
+    _courierLocation = pickupLocation;
+    _progress = 0.0;
+  });
+  
+  // If route is empty, ensure there's a minimal route that starts at the pickup
+  if (_deliveryRoute.isEmpty) {
+    _deliveryRoute = [pickupLocation];
+  } else {
+    // Make sure first point is the pickup (already ensured in route generation, but enforce again)
+    try {
+      if (_deliveryRoute.first.latitude != pickupLocation.latitude || _deliveryRoute.first.longitude != pickupLocation.longitude) {
+        _deliveryRoute.insert(0, pickupLocation);
+      }
+    } catch (e) {
+      print('DEBUG: Error enforcing first route point: $e');
+      _deliveryRoute.insert(0, pickupLocation);
+    }
+  }
+  
+  _updateETA();
+  _startLocationUpdates();
+}
 
   List<LatLng> _generateFallbackRoute(LatLng pickup, LatLng destination) {
-    // Generate intermediate points for a realistic route
-    return [
-      pickup,
-      LatLng(
-        pickup.latitude + (destination.latitude - pickup.latitude) * 0.25,
-        pickup.longitude + (destination.longitude - pickup.longitude) * 0.25,
-      ),
-      LatLng(
-        pickup.latitude + (destination.latitude - pickup.latitude) * 0.5,
-        pickup.longitude + (destination.longitude - pickup.longitude) * 0.5,
-      ),
-      LatLng(
-        pickup.latitude + (destination.latitude - pickup.latitude) * 0.75,
-        pickup.longitude + (destination.longitude - pickup.longitude) * 0.75,
-      ),
-      destination,
-    ];
-  }
+  print('DEBUG: Generating fallback route from pickup: ${pickup.latitude}, ${pickup.longitude}');
+  print('DEBUG: Generating fallback route to destination: ${destination.latitude}, ${destination.longitude}');
+  
+  // Ensure pickup is exactly at Gothong Port
+  final LatLng actualPickup = const LatLng(10.3119, 123.8859);
+  
+  return [
+    actualPickup, // Always start from exact Gothong Port
+    LatLng(
+      actualPickup.latitude + (destination.latitude - actualPickup.latitude) * 0.25,
+      actualPickup.longitude + (destination.longitude - actualPickup.longitude) * 0.25,
+    ),
+    LatLng(
+      actualPickup.latitude + (destination.latitude - actualPickup.latitude) * 0.5,
+      actualPickup.longitude + (destination.longitude - actualPickup.longitude) * 0.5,
+    ),
+    LatLng(
+      actualPickup.latitude + (destination.latitude - actualPickup.latitude) * 0.75,
+      actualPickup.longitude + (destination.longitude - actualPickup.longitude) * 0.75,
+    ),
+    destination,
+  ];
+}
 
-  // Getter methods to safely access data
-  String get _cargoId {
-    return _cargoData?['cargo_id'] ?? widget.cargoId;
+  String get _containerId {
+    return _containerData?['containerId'] ?? _containerData?['id'] ?? widget.containerId;
   }
 
   String get _containerNo {
-    return _cargoData?['containerNo'] ?? widget.containerNo;
+    return _containerData?['containerNumber'] ?? widget.containerNo;
   }
 
-  // Get status only from CargoDelivery
+  String get _sealNumber {
+    return _containerData?['sealNumber'] ?? 'N/A';
+  }
+
+  String get _billOfLading {
+    return _containerData?['billOfLading'] ?? 'N/A';
+  }
+
+  String get _consigneeName {
+    return _containerData?['consigneeName'] ?? 'N/A';
+  }
+
+  String get _consigneeAddress {
+    return _containerData?['consigneeAddress'] ?? 'N/A';
+  }
+
+  String get _consignorName {
+    return _containerData?['consignorName'] ?? 'N/A';
+  }
+
+  String get _consignorAddress {
+    return _containerData?['consignorAddress'] ?? 'N/A';
+  }
+
+  String get _priority {
+    return _containerData?['priority'] ?? 'Standard';
+  }
+
+  String get _deliveredBy {
+    return _containerData?['assigned_courier_name'] ?? 
+           _deliveryData?['confirmed_by'] ?? 
+           _driverName;
+  }
+
+  String get _voyageId {
+    return _containerData?['voyageId'] ?? 'N/A';
+  }
+
+  String get _cargoType {
+    return _containerData?['cargoType'] ?? 'General';
+  }
+
   String get _status {
-    return _deliveryData?['status'] ?? 'pending';
+    return _containerData?['status'] ?? _deliveryData?['status'] ?? 'pending';
   }
 
   String get _pickup {
-    return _cargoData?['origin'] ?? _cargoData?['pickupLocation'] ?? widget.pickup;
+    return DECLARED_ORIGIN;
   }
 
   String get _destination {
-    return _cargoData?['destination'] ?? widget.destination;
+    return _deliveryData?['destination'] ?? 
+           _containerData?['destination'] ?? 
+           widget.destination;
   }
 
   Color _getStatusColor(String status) {
@@ -501,115 +736,164 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
   }
 
   Future<void> _confirmDelivery() async {
-    try {
-      final user = _auth.currentUser;
-      if (user == null) {
-        _showErrorModal('User not logged in');
-        return;
-      }
-
-    // Check if proof image exists - allow if either existing proof or new proof
-    if (!_hasProofImage && _proofOfDeliveryImage == null) {
-      _showErrorModal('Proof of delivery image is required before marking as delivered');
+  try {
+    final user = _auth.currentUser;
+    if (user == null) {
+      _showErrorModal('User not logged in');
       return;
     }
 
-    // Upload proof image if taken in current session
-    String? imageUrl;
+    // Optional: upload proof image but don't rely on it to update ContainerDelivery status.
     if (_proofOfDeliveryImage != null) {
-      imageUrl = await _uploadProofImage(_proofOfDeliveryImage!);
-    } else if (_hasProofImage) {
-      // If proof already exists but no new image, use the existing one
-      QuerySnapshot proofQuery = await _firestore
-          .collection('proof_image')
-          .where('cargo_id', isEqualTo: _cargoId)
-          .limit(1)
-          .get();
-      
-      if (proofQuery.docs.isNotEmpty) {
-        final proofData = proofQuery.docs.first.data() as Map<String, dynamic>;
-        imageUrl = proofData['proof_image_url'] ?? 'existing_proof';
+      try {
+        await _uploadProofImage(_proofOfDeliveryImage!);
+      } catch (e) {
+        print('Warning: proof image upload failed: $e');
       }
     }
 
-    // Update CargoDelivery status
-    QuerySnapshot deliveryQuery = await _firestore
-        .collection('CargoDelivery')
-        .where('cargo_id', isEqualTo: _cargoId)
-        .limit(1)
-        .get();
-
-    final updateData = {
+    // 1) Update Containers collection (only status)
+    await _firestore.collection('Containers').doc(_containerId).update({
       'status': 'delivered',
-      'confirmed_at': Timestamp.now(),
-      'remarks': 'Delivery completed successfully',
-      'updated_at': Timestamp.now(),
-    };
+      'lastUpdated': Timestamp.now(),
+    });
+    print('Info: Containers/${_containerId} status set to delivered');
 
-    if (imageUrl != null && imageUrl != 'existing_proof') {
-      updateData['proof_image_url'] = imageUrl;
+    // 2) Find and update ContainerDelivery document with multiple fallback strategies
+    DocumentReference? deliveryDocRef;
+    bool deliveryUpdated = false;
+
+    // Helper to try a query and return first doc ref if found
+    Future<DocumentReference?> tryQuery(String field, dynamic value) async {
+      try {
+        final q = await _firestore
+            .collection('ContainerDelivery')
+            .where(field, isEqualTo: value)
+            .limit(1)
+            .get();
+        if (q.docs.isNotEmpty) {
+          return q.docs.first.reference;
+        }
+      } catch (e) {
+        print('Debug: query by $field with value $value failed: $e');
+      }
+      return null;
     }
 
-    if (deliveryQuery.docs.isNotEmpty) {
-      await deliveryQuery.docs.first.reference.update(updateData);
-    } else {
-      // Create new delivery record if it doesn't exist
-      await _firestore.collection('CargoDelivery').add({
-        'cargo_id': _cargoId,
-        'courier_id': user.uid,
-        ...updateData,
-        'created_at': Timestamp.now(),
-      });
+    final String containerIdStr = _containerId?.toString() ?? '';
+    final String containerNoStr = _containerNo?.toString() ?? '';
+
+    // Try multiple common field names and both containerId and container number
+    final List<Map<String, dynamic>> attempts = [
+      {'field': 'container_id', 'value': containerIdStr},
+      {'field': 'containerId', 'value': containerIdStr},
+      {'field': 'container_no', 'value': containerNoStr},
+      {'field': 'container_number', 'value': containerNoStr},
+      {'field': 'containerNumber', 'value': containerNoStr},
+    ];
+
+    for (final attempt in attempts) {
+      final field = attempt['field'] as String;
+      final value = attempt['value'];
+      if (value == null || value.toString().isEmpty) continue;
+      
+      final ref = await tryQuery(field, value);
+      if (ref != null) {
+        deliveryDocRef = ref;
+        print('Info: matched ContainerDelivery by "$field" = "$value"; doc: ${ref.path}');
+        break;
+      }
     }
 
-    // Create delivery completed notification
+    // 3) Update the ContainerDelivery.status if we found a doc
+    if (deliveryDocRef != null) {
+      try {
+        await deliveryDocRef.update({
+          'status': 'delivered',
+          'updated_at': Timestamp.now(),
+          'delivered_at': Timestamp.now(),
+          'confirmed_by': user.uid,
+        });
+        print('Info: Updated ${deliveryDocRef.path} status -> delivered');
+        deliveryUpdated = true;
+      } catch (e) {
+        print('Error updating ContainerDelivery: $e');
+      }
+    }
+
+    // 4) If no existing ContainerDelivery found, create a new one
+    if (deliveryDocRef == null) {
+      try {
+        final newDeliveryData = {
+          'container_id': containerIdStr,
+          'container_no': containerNoStr,
+          'status': 'delivered',
+          'courier_id': user.uid,
+          'destination': _destination,
+          'created_at': Timestamp.now(),
+          'updated_at': Timestamp.now(),
+          'delivered_at': Timestamp.now(),
+          'confirmed_by': user.uid,
+          'proof_image_url': _proofOfDeliveryImage != null ? 'uploaded' : null,
+        };
+        
+        await _firestore.collection('ContainerDelivery').add(newDeliveryData);
+        print('Info: Created new ContainerDelivery record for container $containerIdStr');
+        deliveryUpdated = true;
+      } catch (e) {
+        print('Error creating new ContainerDelivery: $e');
+      }
+    }
+
+    // 5) Create notification
     await _firestore.collection('Notifications').add({
       'userId': user.uid,
       'type': 'delivery_completed',
       'message': 'Delivery completed for Container $_containerNo',
       'timestamp': Timestamp.now(),
       'read': false,
-      'cargoId': _cargoId,
+      'containerId': _containerId,
       'containerNo': _containerNo,
     });
 
-    // Update local state
+    // 6) Update UI state
     setState(() {
+      _containerData?['status'] = 'delivered';
       _deliveryData?['status'] = 'delivered';
       _progress = 1.0;
-      _eta = 'Arrived';
-      _hasProofImage = true; // Ensure this is set to true after delivery
+      _eta = DateFormat('h:mm a').format(DateTime.now().toUtc().add(const Duration(hours: 8)));
+      _hasProofImage = _hasProofImage || (_proofOfDeliveryImage != null);
     });
 
-    _showSuccessModal('Delivery marked as completed successfully!');
-    
-    // Navigate back to home after delay
+    // 7) Show appropriate success message
+    if (deliveryUpdated) {
+      _showSuccessModal('Delivery marked as completed successfully! Container and delivery records updated.');
+    } else {
+      _showSuccessModal('Delivery marked as completed! Container status updated. Note: Could not update delivery record.');
+    }
+
     Future.delayed(const Duration(seconds: 2), () {
       Navigator.pushNamedAndRemoveUntil(context, '/home', (route) => false);
     });
-    } catch (e) {
-      print('Error confirming delivery: $e');
-      _showErrorModal('Failed to confirm delivery: $e');
-    }
+  } catch (e, st) {
+    print('Error confirming delivery: $e\n$st');
+    _showErrorModal('Failed to confirm delivery: $e');
   }
+}
 
   Future<String> _uploadProofImage(File imageFile) async {
     try {
-      // For now, we'll store the image URL in Firestore
-      // In a real app, you would upload to Firebase Storage and get the download URL
       final timestamp = DateTime.now().millisecondsSinceEpoch;
-      final imageName = 'proof_${_cargoId}_$timestamp.jpg';
+      final imageName = 'proof_${_containerId}_$timestamp.jpg';
       
-      // Store proof image record
       await _firestore.collection('proof_image').add({
-        'cargo_id': _cargoId,
+        'container_id': _containerId,
         'image_name': imageName,
         'uploaded_at': Timestamp.now(),
         'uploaded_by': _auth.currentUser?.uid,
         'container_no': _containerNo,
       });
 
-      // Return a placeholder URL - in real implementation, this would be the actual download URL
       return 'https://example.com/proof_images/$imageName';
     } catch (e) {
       print('Error uploading proof image: $e');
@@ -625,10 +909,17 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
         return;
       }
 
-      // Update CargoDelivery status only
+      await _firestore
+          .collection('Containers')
+          .doc(_containerId)
+          .update({
+            'status': 'delayed',
+            'lastUpdated': Timestamp.now(),
+          });
+
       QuerySnapshot deliveryQuery = await _firestore
-          .collection('CargoDelivery')
-          .where('cargo_id', isEqualTo: _cargoId)
+          .collection('ContainerDelivery')
+          .where('container_id', isEqualTo: _containerId)
           .limit(1)
           .get();
 
@@ -643,28 +934,26 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
       if (deliveryQuery.docs.isNotEmpty) {
         await deliveryQuery.docs.first.reference.update(delayData);
       } else {
-        // Create new delivery record if it doesn't exist
-        await _firestore.collection('CargoDelivery').add({
-          'cargo_id': _cargoId,
+        await _firestore.collection('ContainerDelivery').add({
+          'container_id': _containerId,
           'courier_id': user.uid,
           ...delayData,
           'created_at': Timestamp.now(),
         });
       }
 
-      // Create delay notification
       await _firestore.collection('Notifications').add({
         'userId': user.uid,
         'type': 'delivery_delayed',
         'message': 'Delivery delayed for Container $_containerNo: $reason',
         'timestamp': Timestamp.now(),
         'read': false,
-        'cargoId': _cargoId,
+        'containerId': _containerId,
         'containerNo': _containerNo,
       });
 
-      // Update local state
       setState(() {
+        _containerData?['status'] = 'delayed';
         _deliveryData?['status'] = 'delayed';
         _selectedDelayTime = null;
       });
@@ -857,11 +1146,10 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
   void _handlePhotoTaken(File imageFile) {
     setState(() {
       _proofOfDeliveryImage = imageFile;
-      _hasProofImage = true; // This should immediately update the status
+      _hasProofImage = true;
       _isTakingPhoto = false;
     });
 
-    // Also update Firestore with the proof image
     _uploadProofImage(imageFile).then((imageUrl) {
       print('Proof image uploaded successfully');
     }).catchError((e) {
@@ -1042,7 +1330,7 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
               ),
               const SizedBox(height: 16),
               const Text(
-                'Loading delivery details...',
+                'Loading container details...',
                 style: TextStyle(
                   fontSize: 16,
                   color: Color(0xFF64748B),
@@ -1065,15 +1353,14 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
           return SingleChildScrollView(
             child: Column(
               children: [
-                // Header with back button
                 Container(
                   width: double.infinity,
-                    padding: EdgeInsets.fromLTRB(
-                      horizontalPadding, 
-                      isTablet ? 40.0 : MediaQuery.of(context).padding.top + 8,
-                      horizontalPadding, 
-                      16
-                    ),
+                  padding: EdgeInsets.fromLTRB(
+                    horizontalPadding, 
+                    isTablet ? 40.0 : MediaQuery.of(context).padding.top + 8,
+                    horizontalPadding, 
+                    16
+                  ),
                   decoration: const BoxDecoration(
                     gradient: LinearGradient(
                       begin: Alignment.topLeft,
@@ -1107,7 +1394,7 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
                         color: Colors.white,
                         size: 24,
                       ),
-                      const SizedBox(width: 12),
+                      const SizedBox(width: 12, height: 0),
                       const Text(
                         "Live Location",
                         style: TextStyle(
@@ -1122,12 +1409,10 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
 
                 const SizedBox(height: 16),
 
-                // Live Location Map - Real-time with ETA
                 _buildLiveLocationMap(horizontalPadding, mapHeight, isTablet),
 
                 const SizedBox(height: 16),
 
-                // Container Delivery Details
                 Container(
                   margin: EdgeInsets.symmetric(horizontal: horizontalPadding),
                   padding: const EdgeInsets.all(20),
@@ -1167,23 +1452,144 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
                           ),
                         ],
                       ),
-                      const SizedBox(height: 16),
-                      _buildDetailRow(
-                        Icons.calendar_today_rounded,
-                        _deliveryData?['confirmed_at'] != null 
-                            ? _formatDate(_deliveryData!['confirmed_at'] as Timestamp)
-                            : "Schedule Date", 
-                        ""
+                      
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF8FAFC),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: const Color(0xFFE2E8F0)),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(
+                              Icons.inventory_2_rounded,
+                              color: Color(0xFF64748B),
+                              size: 18,
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Text(
+                                    "Location",
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: Color(0xFF94A3B8),
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    _pickup,
+                                    style: const TextStyle(
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w600,
+                                      color: Colors.black,
+                                    ),
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
-                      _buildDetailRow(Icons.access_time_rounded, widget.time, _containerNo),
-                      _buildDetailRow(Icons.place_rounded, _pickup, ""),
-                      _buildDetailRow(Icons.flag_rounded, _destination, ""),
-                      _buildDetailRow(Icons.person_rounded, "Driver Assigned: $_driverName", ""),
-                      // Proof of Delivery Status
+                      const SizedBox(height: 12),
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF8FAFC),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: const Color(0xFFE2E8F0)),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(
+                              Icons.flag_rounded,
+                              color: Color(0xFF64748B),
+                              size: 18,
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Text(
+                                    "Destination",
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: Color(0xFF94A3B8),
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    _destination,
+                                    style: const TextStyle(
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w600,
+                                      color: Colors.black,
+                                    ),
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF8FAFC),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: const Color(0xFFE2E8F0)),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(
+                              Icons.check_circle_rounded,
+                              color: Color(0xFF64748B),
+                              size: 18,
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Text(
+                                    "Delivered By",
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: Color(0xFF94A3B8),
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    _deliveredBy,
+                                    style: const TextStyle(
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w600,
+                                      color: Colors.black,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 12),
                       _buildDetailRow(
                         Icons.photo_camera_rounded,
                         "Proof of Delivery:",
-                        _hasProofImage ? "Required": "Not Available"
+                        _hasProofImage ? "Captured ✓" : "Not Available"
                       ),
                       const SizedBox(height: 12),
                       Container(
@@ -1225,7 +1631,6 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
 
                 const SizedBox(height: 16),
 
-                // Cargo Information
                 Container(
                   margin: EdgeInsets.symmetric(horizontal: horizontalPadding),
                   padding: const EdgeInsets.all(20),
@@ -1256,33 +1661,33 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
                           ),
                           const SizedBox(width: 8),
                           const Text(
-                            "Cargo Information",
+                            "Container Information",
                             style: TextStyle(
                               fontSize: 16,
                               fontWeight: FontWeight.w700,
-                            color: Color(0xFF1E293B),
+                              color: Color(0xFF1E293B),
                             ),
                           ),
                         ],
                       ),
                       const SizedBox(height: 16),
-                      _buildDetailRow(Icons.type_specimen_rounded, "Container Type: Standard Container", ""),
-                      _buildDetailRow(Icons.description_rounded, "Contents: ${_cargoData?['description'] ?? 'Electronics'}", ""),
-                      _buildDetailRow(Icons.fitness_center_rounded, "Weight: ${_cargoData?['weight'] ?? '3,200'}kg", ""),
-                      _buildDetailRow(Icons.code_rounded, "HS Code: ${_cargoData?['hs_code'] ?? 'N/A'}", ""),
-                      _buildDetailRow(Icons.attach_money_rounded, "Value: \$${_cargoData?['value'] ?? '0'}", ""),
-                      _buildDetailRow(Icons.format_list_numbered_rounded, "Quantity: ${_cargoData?['quantity'] ?? '1'}", ""),
-                      _buildDetailRow(Icons.numbers_rounded, "Item Number: ${_cargoData?['item_number'] ?? 'N/A'}", ""),
-                      if (_cargoData?['additional_info'] != null && _cargoData!['additional_info'].toString().isNotEmpty)
-                        _buildDetailRow(Icons.info_rounded, "Additional Info: ${_cargoData!['additional_info']}", ""),
-                      _buildDetailRow(Icons.warning_rounded, "Hazardous: No", ""),
+                      _buildDetailRow(Icons.numbers_rounded, "Container Number:", _containerNo),
+                      _buildDetailRow(Icons.security_rounded, "Seal Number:", _sealNumber),
+                      _buildDetailRow(Icons.description_rounded, "Bill of Landing:", _billOfLading),
+                      _buildDetailRow(Icons.person_rounded, "Consignee:", _consigneeName),
+                      _buildDetailRow(Icons.location_on_rounded, "Consignee Address:", _consigneeAddress),
+                      _buildDetailRow(Icons.person_outline_rounded, "Consignor:", _consignorName),
+                      _buildDetailRow(Icons.business_rounded, "Consignor Address:", _consignorAddress),
+                      _buildDetailRow(Icons.flag_rounded, "Priority:", _priority),
+                      _buildDetailRow(Icons.local_shipping_rounded, "Delivered By:", _deliveredBy),
+                      _buildDetailRow(Icons.sailing_rounded, "Voyage ID:", _voyageId),
+                      _buildDetailRow(Icons.category_rounded, "Cargo Type:", _cargoType),
                     ],
                   ),
                 ),
 
                 const SizedBox(height: 16),
 
-                // Action Buttons
                 Container(
                   margin: EdgeInsets.symmetric(horizontal: horizontalPadding),
                   child: isTablet 
@@ -1350,18 +1755,25 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
                 ),
               ),
               const Spacer(),
-              const Icon(
-                Icons.access_time_rounded,
-                color: Color(0xFF64748B),
-                size: 16,
-              ),
-              const SizedBox(width: 4),
-              Text(
-                "ETA: $_eta",
-                style: const TextStyle(
-                  fontSize: 12,
-                  color: Color(0xFF64748B),
-                ),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  const Text(
+                    "ETA:",
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Color(0xFF64748B),
+                    ),
+                  ),
+                  Text(
+                    _eta,
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: Color(0xFF1E293B),
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
@@ -1375,160 +1787,137 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
             ),
             child: ClipRRect(
               borderRadius: BorderRadius.circular(12),
-              child: _courierLocation != null && _deliveryRoute.isNotEmpty
-                  ? RealtimeLocationMap(
-                      courierLocation: _courierLocation!,
-                      deliveryRoute: _deliveryRoute,
-                      pickupLocation: _deliveryRoute.first,
-                      destinationLocation: _deliveryRoute.last,
-                      progress: _progress,
-                      calculateDistance: _calculateDistance,
-                    )
-                  : const Center(
-                      child: Text(
-                        'Loading map...',
-                        style: TextStyle(
-                          color: Color(0xFF64748B),
-                        ),
-                      ),
-                    ),
+              child: _courierLocation != null && 
+        _deliveryRoute.isNotEmpty && 
+        _actualDestinationLocation != null
+    ? RealtimeLocationMap(
+        courierLocation: _courierLocation!,
+        deliveryRoute: _deliveryRoute,
+        pickupLocation: _deliveryRoute.isNotEmpty ? _deliveryRoute.first : _courierLocation!,
+        destinationLocation: _actualDestinationLocation!,
+        progress: _progress,
+        calculateDistance: _calculateDistance,
+      )
+    : const Center(
+         child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            CircularProgressIndicator(
+              valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF3B82F6)),
             ),
-          ),
-          // Progress indicator
-          if (_routeInfo != null)
-            Padding(
-              padding: const EdgeInsets.only(top: 12),
-              child: Column(
-                children: [
-                  LinearProgressIndicator(
-                    value: _progress, // Static progress value
-                    backgroundColor: const Color(0xFFE2E8F0),
-                    valueColor: AlwaysStoppedAnimation<Color>(_getStatusColor(_status)),
-                    minHeight: 6,
-                    borderRadius: BorderRadius.circular(3),
-                  ),
-                  const SizedBox(height: 8),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(
-                        '${(_progress * 100).toStringAsFixed(1)}% Complete',
-                        style: const TextStyle(
-                          fontSize: 12,
-                          color: Color(0xFF64748B),
-                        ),
-                      ),
-                      Text(
-                        '${_routeInfo!['distanceValue'] != null ? (_routeInfo!['distanceValue'] as double).toStringAsFixed(1) : '0.0'} km',
-                        style: const TextStyle(
-                          fontSize: 12,
-                          color: Color(0xFF64748B),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
+            SizedBox(height: 12),
+            Text(
+              'Generating route from Gothong Port...',
+              style: TextStyle(
+                color: Color(0xFF64748B),
               ),
             ),
+          ],
+        ),
+      )
+      ),
+          ),
         ],
       ),
     );
   }
 
   List<Widget> _buildActionButtons(BuildContext context, bool isTablet) {
-  final bool isDelivered = _status.toLowerCase() == 'delivered';
-  final bool isDelayed = _status.toLowerCase() == 'delayed';
-  final bool hasProof = _hasProofImage || _proofOfDeliveryImage != null;
-  
-  return [
-    Expanded(
-      child: OutlinedButton.icon(
-        style: OutlinedButton.styleFrom(
-          foregroundColor: isDelivered 
-              ? const Color(0xFF94A3B8)
-              : const Color(0xFF3B82F6),
-          side: BorderSide(
-            color: isDelivered
-                ? const Color(0xFFE2E8F0)
+    final bool isDelivered = _status.toLowerCase() == 'delivered';
+    final bool isDelayed = _status.toLowerCase() == 'delayed';
+    // allow marking delivered even if no proof image present
+    final bool hasProof = _hasProofImage || _proofOfDeliveryImage != null;
+    
+    return [
+      Expanded(
+        child: OutlinedButton.icon(
+          style: OutlinedButton.styleFrom(
+            foregroundColor: isDelivered 
+                ? const Color(0xFF94A3B8)
                 : const Color(0xFF3B82F6),
+            side: BorderSide(
+              color: isDelivered
+                  ? const Color(0xFFE2E8F0)
+                  : const Color(0xFF3B82F6),
+            ),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+            padding: EdgeInsets.symmetric(vertical: isTablet ? 16 : 12),
           ),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
-          padding: EdgeInsets.symmetric(vertical: isTablet ? 16 : 12),
-        ),
-        onPressed: isDelivered ? null : _showCameraModal,
-        icon: Icon(Icons.photo_camera_rounded, 
-            size: 20, 
-            color: isDelivered ? const Color(0xFF94A3B8) : const Color(0xFF3B82F6)),
-        label: Text(
-          "Proof of Delivery",
-          style: TextStyle(
-            fontSize: isTablet ? 16 : 14,
-            fontWeight: FontWeight.w600,
-            color: isDelivered ? const Color(0xFF94A3B8) : const Color(0xFF3B82F6),
+          onPressed: isDelivered ? null : _showCameraModal,
+          icon: Icon(Icons.photo_camera_rounded, 
+              size: 20, 
+              color: isDelivered ? const Color(0xFF94A3B8) : const Color(0xFF3B82F6)),
+          label: Text(
+            "Proof of Delivery",
+            style: TextStyle(
+              fontSize: isTablet ? 16 : 14,
+              fontWeight: FontWeight.w600,
+              color: isDelivered ? const Color(0xFF94A3B8) : const Color(0xFF3B82F6),
+            ),
           ),
         ),
       ),
-    ),
-    SizedBox(width: isTablet ? 12 : 8),
-    Expanded(
-      child: OutlinedButton.icon(
-        style: OutlinedButton.styleFrom(
-          foregroundColor: (isDelivered || isDelayed) 
-              ? const Color(0xFF94A3B8)
-              : const Color(0xFFF59E0B),
-          side: BorderSide(
-            color: (isDelivered || isDelayed)
-                ? const Color(0xFFE2E8F0)
+      SizedBox(width: isTablet ? 12 : 8),
+      Expanded(
+        child: OutlinedButton.icon(
+          style: OutlinedButton.styleFrom(
+            foregroundColor: (isDelivered || isDelayed) 
+                ? const Color(0xFF94A3B8)
                 : const Color(0xFFF59E0B),
+            side: BorderSide(
+              color: (isDelivered || isDelayed)
+                  ? const Color(0xFFE2E8F0)
+                  : const Color(0xFFF59E0B),
+            ),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+            padding: EdgeInsets.symmetric(vertical: isTablet ? 16 : 12),
           ),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
-          padding: EdgeInsets.symmetric(vertical: isTablet ? 16 : 12),
-        ),
-        onPressed: (isDelivered || isDelayed) ? null : () => _showReportDelayModal(context),
-        icon: Icon(Icons.report_problem_rounded, 
-            size: 20, 
-            color: (isDelivered || isDelayed) ? const Color(0xFF94A3B8) : const Color(0xFFF59E0B)),
-        label: Text(
-          isDelayed ? "Delivery Delayed" : "Report Delay",
-          style: TextStyle(
-            fontSize: isTablet ? 16 : 14,
-            fontWeight: FontWeight.w600,
-            color: (isDelivered || isDelayed) ? const Color(0xFF94A3B8) : const Color(0xFFF59E0B),
-          ),
-        ),
-      ),
-    ),
-    SizedBox(width: isTablet ? 12 : 8),
-    Expanded(
-      child: ElevatedButton.icon(
-        style: ElevatedButton.styleFrom(
-          backgroundColor: (isDelivered || isDelayed || !hasProof) 
-              ? const Color(0xFF94A3B8)
-              : const Color(0xFF10B981),
-          foregroundColor: Colors.white,
-          elevation: 0,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
-          padding: EdgeInsets.symmetric(vertical: isTablet ? 16 : 12),
-        ),
-        onPressed: (isDelivered || isDelayed || !hasProof) ? null : () => _showDeliveryConfirmationModal(context),
-        icon: const Icon(Icons.check_circle_rounded, size: 20),
-        label: Text(
-          isDelayed ? "Cannot Deliver" : "Mark Delivered",
-          style: TextStyle(
-            fontSize: isTablet ? 16 : 14,
-            fontWeight: FontWeight.w600,
+          onPressed: (isDelivered || isDelayed) ? null : () => _showReportDelayModal(context),
+          icon: Icon(Icons.report_problem_rounded, 
+              size: 20, 
+              color: (isDelivered || isDelayed) ? const Color(0xFF94A3B8) : const Color(0xFFF59E0B)),
+          label: Text(
+            isDelayed ? "Delivery Delayed" : "Report Delay",
+            style: TextStyle(
+              fontSize: isTablet ? 16 : 14,
+              fontWeight: FontWeight.w600,
+              color: (isDelivered || isDelayed) ? const Color(0xFF94A3B8) : const Color(0xFFF59E0B),
+            ),
           ),
         ),
       ),
-    ),
-  ];
-}
+      SizedBox(width: isTablet ? 12 : 8),
+      Expanded(
+        child: ElevatedButton.icon(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: (isDelivered || isDelayed) 
+                ? const Color(0xFF94A3B8)
+                : const Color(0xFF10B981),
+            foregroundColor: Colors.white,
+            elevation: 0,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+            padding: EdgeInsets.symmetric(vertical: isTablet ? 16 : 12),
+          ),
+          // Removed proof requirement from the enable/disable condition:
+          onPressed: (isDelivered || isDelayed) ? null : () => _showDeliveryConfirmationModal(context),
+          icon: const Icon(Icons.check_circle_rounded, size: 20),
+          label: Text(
+            isDelayed ? "Cannot Deliver" : "Mark Delivered",
+            style: TextStyle(
+              fontSize: isTablet ? 16 : 14,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+      ),
+    ];
+  }
 
   Widget _buildDetailRow(IconData icon, String text, String value) {
     return Padding(
@@ -1554,10 +1943,10 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
           if (value.isNotEmpty)
             Text(
               value,
-              style: TextStyle(
+              style: const TextStyle(
                 fontSize: 14,
                 fontWeight: FontWeight.w600,
-                color: value == "Required" ? const Color(0xFFEF4444) : const Color(0xFF10B981),
+                color: Colors.black,
               ),
             ),
         ],
@@ -1582,7 +1971,7 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
     final bool isDelayed = _status.toLowerCase() == 'delayed';
     
     if (isDelivered || isDelayed) {
-      _showErrorModal('Cannot report delay for ${isDelivered ? 'delivered' : 'already delayed'} cargo.');
+      _showErrorModal('Cannot report delay for ${isDelivered ? 'delivered' : 'already delayed'} container.');
       return;
     }
 
@@ -1841,7 +2230,7 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
     final bool isDelivered = _status.toLowerCase() == 'delivered';
     
     if (isDelivered) {
-      _showErrorModal('This cargo has already been delivered.');
+      _showErrorModal('This container has already been delivered.');
       return;
     }
 
@@ -1946,7 +2335,7 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
                         style: TextStyle(
                           fontSize: 14,
                           fontWeight: FontWeight.w600,
-                          color: _hasProofImage ? const Color(0xFF10B981) : const Color(0xFFEF4444),
+                          color: _hasProofImage ? const Color(0xFF10B981) : const Color(0xFF64748B),
                         ),
                       ),
                     ],
@@ -2007,7 +2396,7 @@ class _LiveLocationPageState extends State<LiveLocationPage> {
   }
 }
 
-// Fixed Full Screen Camera Widget
+// Full Screen Camera Widget
 class FullScreenCamera extends StatefulWidget {
   final String containerNo;
   final Function(File) onPhotoTaken;
@@ -2051,7 +2440,7 @@ class _FullScreenCameraState extends State<FullScreenCamera> {
       if (_cameras != null && _cameras!.isNotEmpty) {
         _cameraController = CameraController(
           _cameras![_selectedCameraIndex],
-          ResolutionPreset.medium, // Changed to medium for better compatibility
+          ResolutionPreset.medium,
         );
         
         await _cameraController!.initialize().then((_) {
@@ -2124,13 +2513,10 @@ class _FullScreenCameraState extends State<FullScreenCamera> {
     });
 
     try {
-      // Remove flash mode setting to avoid conflicts
       final XFile picture = await _cameraController!.takePicture();
       
-      // Verify the file exists and is readable
       final File imageFile = File(picture.path);
       if (await imageFile.exists()) {
-        // Return to previous screen with the captured image
         if (mounted) {
           Navigator.pop(context);
           widget.onPhotoTaken(imageFile);
@@ -2226,7 +2612,6 @@ class _FullScreenCameraState extends State<FullScreenCamera> {
       body: SafeArea(
         child: Stack(
           children: [
-            // Camera Preview (Full Screen)
             if (!_isInitializing && _cameraController != null && _cameraController!.value.isInitialized)
               _buildCameraPreview()
             else if (_isInitializing)
@@ -2251,7 +2636,6 @@ class _FullScreenCameraState extends State<FullScreenCamera> {
             else
               _buildErrorState(),
 
-            // Top Bar
             Positioned(
               top: 0,
               left: 0,
@@ -2295,14 +2679,12 @@ class _FullScreenCameraState extends State<FullScreenCamera> {
                       ),
                     ),
                     const Spacer(),
-                    // Placeholder for alignment
                     const SizedBox(width: 40),
                   ],
                 ),
               ),
             ),
 
-            // Camera Controls (Bottom)
             Positioned(
               bottom: 0,
               left: 0,
@@ -2321,14 +2703,10 @@ class _FullScreenCameraState extends State<FullScreenCamera> {
                 ),
                 child: Column(
                   children: [
-                    // Camera Options Row
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceAround,
                       children: [
-                        // Empty space where flash button used to be
                         const SizedBox(width: 48),
-
-                        // Capture Button (Large)
                         _isCapturing
                             ? const SizedBox(
                                 width: 70,
@@ -2360,8 +2738,6 @@ class _FullScreenCameraState extends State<FullScreenCamera> {
                                   ),
                                 ),
                               ),
-
-                        // Camera Switch
                         if (_cameras != null && _cameras!.length > 1 && !_isCapturing)
                           GestureDetector(
                             onTap: _switchCamera,
@@ -2379,13 +2755,10 @@ class _FullScreenCameraState extends State<FullScreenCamera> {
                             ),
                           )
                         else
-                          const SizedBox(width: 48), // Placeholder for alignment
+                          const SizedBox(width: 48),
                       ],
                     ),
-
                     const SizedBox(height: 20),
-
-                    // Instruction Text
                     Text(
                       _isCapturing ? 'Capturing...' : 'Position the container in frame and tap to capture',
                       style: const TextStyle(
@@ -2398,7 +2771,6 @@ class _FullScreenCameraState extends State<FullScreenCamera> {
               ),
             ),
 
-            // Capture Frame Overlay
             if (!_isCapturing)
               Positioned(
                 top: MediaQuery.of(context).size.height * 0.25,
@@ -2462,13 +2834,16 @@ class RealtimeLocationMap extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Calculate bounds to fit both pickup and destination
+    final bounds = LatLngBounds.fromPoints([pickupLocation, destinationLocation]);
+    
     return SizedBox(
       width: double.infinity,
       height: double.infinity,
       child: FlutterMap(
         options: MapOptions(
-          initialCenter: courierLocation,
-          initialZoom: 10.0,
+          initialCenter: bounds.center,
+          initialZoom: _calculateOptimalZoom(bounds),
           minZoom: 9.0,
           maxZoom: 15.0,
           interactiveFlags: InteractiveFlag.none,
@@ -2479,7 +2854,7 @@ class RealtimeLocationMap extends StatelessWidget {
             userAgentPackageName: 'com.example.cargo_app',
           ),
           
-          // Delivery route
+          // Display the full route
           if (deliveryRoute.length > 1)
             PolylineLayer(
               polylines: [
@@ -2488,22 +2863,16 @@ class RealtimeLocationMap extends StatelessWidget {
                   color: const Color(0xFF3B82F6).withOpacity(0.7),
                   strokeWidth: 4.0,
                 ),
-                // Completed route portion
-                Polyline(
-                  points: _getCompletedRoutePortion(),
-                  color: const Color(0xFF10B981),
-                  strokeWidth: 4.0,
-                ),
               ],
             ),
           
           MarkerLayer(
             markers: [
-              // Pickup location
+              // Pickup marker
               Marker(
                 point: pickupLocation,
-                width: 32,
-                height: 32,
+                width: 40,
+                height: 40,
                 child: Container(
                   decoration: BoxDecoration(
                     color: Colors.white,
@@ -2517,18 +2886,18 @@ class RealtimeLocationMap extends StatelessWidget {
                     ],
                   ),
                   child: const Icon(
-                    Icons.location_on,
-                    color: Color(0xFF10B981),
-                    size: 16,
+                    Icons.inventory_2_rounded,
+                    color: Color(0xFF3B82F6),
+                    size: 20,
                   ),
                 ),
               ),
               
-              // Destination location
+              // Destination marker
               Marker(
                 point: destinationLocation,
-                width: 32,
-                height: 32,
+                width: 40,
+                height: 40,
                 child: Container(
                   decoration: BoxDecoration(
                     color: Colors.white,
@@ -2542,18 +2911,18 @@ class RealtimeLocationMap extends StatelessWidget {
                     ],
                   ),
                   child: const Icon(
-                    Icons.flag,
+                    Icons.location_on_rounded,
                     color: Color(0xFFEF4444),
-                    size: 16,
+                    size: 20,
                   ),
                 ),
               ),
               
-              // Courier location (minimized)
+              // Courier marker
               Marker(
                 point: courierLocation,
-                width: 40, // Reduced from 60
-                height: 40, // Reduced from 60
+                width: 40,
+                height: 40,
                 child: Container(
                   decoration: BoxDecoration(
                     color: const Color(0xFFF59E0B),
@@ -2570,7 +2939,7 @@ class RealtimeLocationMap extends StatelessWidget {
                   child: const Icon(
                     Icons.local_shipping,
                     color: Colors.white,
-                    size: 18, // Reduced from 24
+                    size: 18,
                   ),
                 ),
               ),
@@ -2581,41 +2950,14 @@ class RealtimeLocationMap extends StatelessWidget {
     );
   }
 
-  List<LatLng> _getCompletedRoutePortion() {
-    if (progress >= 1.0) return deliveryRoute;
-    
-    final completedDistance = _calculateTotalRouteDistance() * progress;
-    double accumulatedDistance = 0.0;
-    List<LatLng> completedPoints = [deliveryRoute.first];
-    
-    for (int i = 0; i < deliveryRoute.length - 1; i++) {
-      final segmentDistance = calculateDistance(
-        deliveryRoute[i], 
-        deliveryRoute[i + 1]
-      );
-      
-      if (accumulatedDistance + segmentDistance <= completedDistance) {
-        completedPoints.add(deliveryRoute[i + 1]);
-        accumulatedDistance += segmentDistance;
-      } else {
-        final ratio = (completedDistance - accumulatedDistance) / segmentDistance;
-        final lastPoint = LatLng(
-          deliveryRoute[i].latitude + (deliveryRoute[i + 1].latitude - deliveryRoute[i].latitude) * ratio,
-          deliveryRoute[i].longitude + (deliveryRoute[i + 1].longitude - deliveryRoute[i].longitude) * ratio,
-        );
-        completedPoints.add(lastPoint);
-        break;
-      }
-    }
-    
-    return completedPoints;
+  double _calculateOptimalZoom(LatLngBounds bounds) {
+    // Calculate a zoom level that fits both points comfortably
+    final distance = calculateDistance(bounds.northWest, bounds.southEast);
+    if (distance > 50) return 10.0;
+    if (distance > 20) return 11.0;
+    if (distance > 10) return 12.0;
+    if (distance > 5) return 13.0;
+    return 14.0;
   }
 
-  double _calculateTotalRouteDistance() {
-    double total = 0.0;
-    for (int i = 0; i < deliveryRoute.length - 1; i++) { 
-      total += calculateDistance(deliveryRoute[i], deliveryRoute[i + 1]);
-    }
-    return total;
-  }
 }

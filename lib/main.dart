@@ -100,7 +100,7 @@ class MainApp extends StatelessWidget {
         '/live_location': (context) {
           final args = ModalRoute.of(context)!.settings.arguments as Map<String, dynamic>;
           return LiveLocationPage(
-            cargoData: args['cargoData'],
+            containerData: args['cargoData'] ?? args['containerData'],
           );
         },
         '/container_details': (context) {
@@ -113,7 +113,7 @@ class MainApp extends StatelessWidget {
         '/status_update': (context) {
           final args = ModalRoute.of(context)!.settings.arguments as Map<String, dynamic>;
           return StatusUpdatePage(
-            cargoData: args['cargoData'],
+            containerData: args['cargoData'] ?? args['containerData'], // Support both old and new parameter names
           );
         },
         '/analytics': (context) {

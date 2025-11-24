@@ -6,6 +6,8 @@ import 'dart:convert';
 import 'livemap_page.dart';
 import 'live_location_page.dart';
 
+const String DECLARED_ORIGIN = "Don Carlos A. Gothong Port Centre, Quezon Boulevard, Pier 4, Cebu City.";
+
 class ContainerDetailsPage extends StatefulWidget {
   final Map<String, dynamic> containerData;
   final bool isAvailable;
@@ -21,7 +23,7 @@ class ContainerDetailsPage extends StatefulWidget {
 }
 
 class _ContainerDetailsPageState extends State<ContainerDetailsPage> {
-  Map<String, dynamic>? _cargoData;
+  Map<String, dynamic>? _containerData;
   bool _isLoading = true;
   String? _error;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -39,58 +41,102 @@ class _ContainerDetailsPageState extends State<ContainerDetailsPage> {
   }
 
   Future<void> _initializeData() async {
-  try {
-    // Use containerData from widget
-    _cargoData = widget.containerData;
-    
-    // Load delivery status from CargoDelivery
-    await _loadDeliveryStatus();
-    
-    setState(() {
-      _isLoading = false;
-    });
-    
-    // Load real-time route information
-    _loadRealTimeRouteInfo();
-  } catch (e) {
-    setState(() {
-      _error = 'Error loading cargo data: $e';
-      _isLoading = false;
-    });
-  }
-}
-
-Future<void> _loadDeliveryStatus() async {
-  try {
-    final cargoId = _cargoId;
-    if (cargoId.isEmpty) return;
-
-    // Get delivery status from CargoDelivery
-    final deliveryQuery = await _firestore
-        .collection('CargoDelivery')
-        .where('cargo_id', isEqualTo: cargoId)
-        .limit(1)
-        .get();
-
-    if (deliveryQuery.docs.isNotEmpty) {
-      final deliveryData = deliveryQuery.docs.first.data();
-      final deliveryStatus = deliveryData['status']?.toString().toLowerCase() ?? 'pending';
+    try {
+      // Use containerData from widget as base
+      _containerData = widget.containerData;
       
-      // Update the cargo data with the delivery status
-      _cargoData!['status'] = deliveryStatus;
-      _cargoData!['is_cancelled'] = deliveryStatus == 'cancelled';
-    } else {
-      // No delivery record exists, use default status
-      _cargoData!['status'] = 'pending';
-      _cargoData!['is_cancelled'] = false;
+      // Load additional container details from Containers collection
+      await _loadContainerDetails();
+      
+      // Load delivery status from ContainerDelivery
+      await _loadDeliveryStatus();
+      
+      setState(() {
+        _isLoading = false;
+      });
+      
+      // Load real-time route information
+      _loadRealTimeRouteInfo();
+    } catch (e) {
+      setState(() {
+        _error = 'Error loading container data: $e';
+        _isLoading = false;
+      });
     }
-  } catch (e) {
-    print('Error loading delivery status: $e');
-    // Fallback to default status
-    _cargoData!['status'] = 'pending';
-    _cargoData!['is_cancelled'] = false;
   }
-}
+
+  Future<void> _loadContainerDetails() async {
+    try {
+      final containerId = _containerId;
+      if (containerId.isEmpty) return;
+
+      // Get container details from Containers collection
+      final containerDoc = await _firestore
+          .collection('Containers')
+          .doc(containerId)
+          .get();
+
+      if (containerDoc.exists) {
+        final containerDetails = containerDoc.data() as Map<String, dynamic>;
+        
+        // Update the container data with details from Containers collection
+        _containerData!.addAll({
+          'containerNumber': containerDetails['containerNumber'] ?? 'N/A',
+          'sealNumber': containerDetails['sealNumber'] ?? 'N/A',
+          'billOfLading': containerDetails['billOfLading'] ?? 'N/A',
+          'consigneeName': containerDetails['consigneeName'] ?? 'N/A',
+          'consigneeAddress': containerDetails['consigneeAddress'] ?? 'N/A',
+          'consignorName': containerDetails['consignorName'] ?? 'N/A',
+          'consignorAddress': containerDetails['consignorAddress'] ?? 'N/A',
+          'priority': containerDetails['priority'] ?? 'normal',
+          'deliveredBy': containerDetails['deliveredBy'] ?? '',
+          'voyageId': containerDetails['voyageId'] ?? '',
+          'location': DECLARED_ORIGIN,
+          'destination': containerDetails['destination'] ?? 'Delivery Point',
+          'cargoType': containerDetails['cargoType'] ?? 'General',
+          'dateCreated': containerDetails['dateCreated'],
+          'allocationStatus': containerDetails['allocationStatus'] ?? 'pending',
+        });
+      }
+    } catch (e) {
+      print('Error loading container details: $e');
+    }
+  }
+
+  Future<void> _loadDeliveryStatus() async {
+    try {
+      final containerId = _containerId;
+      if (containerId.isEmpty) return;
+
+      // Get delivery status from ContainerDelivery (NEW COLLECTION)
+      final deliveryQuery = await _firestore
+          .collection('ContainerDelivery')
+          .where('containerId', isEqualTo: containerId)
+          .limit(1)
+          .get();
+
+      if (deliveryQuery.docs.isNotEmpty) {
+        final deliveryData = deliveryQuery.docs.first.data();
+        final deliveryStatus = deliveryData['status']?.toString().toLowerCase() ?? 'pending';
+        
+        // Update the container data with the delivery status
+        _containerData!['status'] = deliveryStatus;
+        _containerData!['is_cancelled'] = deliveryStatus == 'cancelled';
+        _containerData!['delivery_id'] = deliveryQuery.docs.first.id;
+      } else {
+        // No delivery record exists, use default status
+        _containerData!['status'] = 'pending';
+        _containerData!['is_cancelled'] = false;
+        _containerData!['delivery_id'] = '';
+      }
+    } catch (e) {
+      print('Error loading delivery status: $e');
+      // Fallback to default status
+      _containerData!['status'] = 'pending';
+      _containerData!['is_cancelled'] = false;
+      _containerData!['delivery_id'] = '';
+    }
+  }
 
   Future<void> _loadRealTimeRouteInfo() async {
     if (_pickup.isEmpty || _destination.isEmpty) return;
@@ -114,32 +160,32 @@ Future<void> _loadDeliveryStatus() async {
   }
 
   // Getter methods to safely access data
-  String get _cargoId {
-    return _cargoData?['cargo_id'] ?? '';
+  String get _containerId {
+    return _containerData?['containerId'] ?? _containerData?['container_id'] ?? '';
   }
 
   String get _containerNo {
-    return _cargoData?['containerNo'] ?? 'CONT-${_cargoData?['item_number'] ?? 'N/A'}';
+    return _containerData?['containerNumber'] ?? 'N/A';
   }
 
   String get _status {
-    return _cargoData?['status'] ?? 'pending';
+    return _containerData?['status'] ?? 'pending';
   }
 
   String get _pickup {
-    return _cargoData?['origin'] ?? _cargoData?['pickupLocation'] ?? 'Port Terminal';
+    return _containerData?['location'] ?? 'Port Terminal';
   }
 
   String get _destination {
-    return _cargoData?['destination'] ?? 'Delivery Point';
+    return _containerData?['destination'] ?? 'Delivery Point';
   }
 
-  // Check if cargo is cancelled - FIXED VERSION
+  // Check if container is cancelled - FIXED VERSION
   bool get _isCancelled {
     final status = _status.toLowerCase();
     return status == 'cancelled' || 
-           _cargoData?['is_cancelled'] == true ||
-           _cargoData?['cancelled'] == true ||
+           _containerData?['is_cancelled'] == true ||
+           _containerData?['cancelled'] == true ||
            widget.containerData['is_cancelled'] == true ||
            widget.containerData['cancelled'] == true;
   }
@@ -151,13 +197,13 @@ Future<void> _loadDeliveryStatus() async {
     return;
   }
 
-  // Check if cargo is cancelled - ENHANCED CHECK
+  // Check if container is cancelled - ENHANCED CHECK
   if (_isCancelled) {
     _showErrorModal('This delivery has been cancelled and cannot be updated.');
     return;
   }
 
-  // Prevent starting delivery if cargo is cancelled
+  // Prevent starting delivery if container is cancelled
   if (newStatus == 'in-progress' && _isCancelled) {
     _showErrorModal('Cannot start delivery - this task has been cancelled.');
     return;
@@ -174,18 +220,18 @@ Future<void> _loadDeliveryStatus() async {
   });
 
   try {
-    final cargoId = _cargoId;
+    final containerId = _containerId;
     final user = _auth.currentUser;
     
-    if (cargoId.isEmpty || user == null) {
-      _showErrorModal('Unable to update status: Missing cargo ID or user');
+    if (containerId.isEmpty || user == null) {
+      _showErrorModal('Unable to update status: Missing container ID or user');
       return;
     }
 
     // Check if delivery record exists and get current status
     final deliveryQuery = await _firestore
-        .collection('CargoDelivery')
-        .where('cargo_id', isEqualTo: cargoId)
+        .collection('ContainerDelivery')
+        .where('containerId', isEqualTo: containerId)
         .limit(1)
         .get();
 
@@ -207,8 +253,8 @@ Future<void> _loadDeliveryStatus() async {
     if (newStatus == 'in-progress') {
       if (deliveryQuery.docs.isEmpty) {
         // Create delivery record when starting delivery
-        final newDelivery = await _firestore.collection('CargoDelivery').add({
-          'cargo_id': cargoId,
+        final newDelivery = await _firestore.collection('ContainerDelivery').add({
+          'containerId': containerId,
           'courier_id': user.uid,
           'status': 'in-progress',
           'confirmed_at': Timestamp.now(),
@@ -220,18 +266,29 @@ Future<void> _loadDeliveryStatus() async {
       } else {
         // Update existing delivery record
         await _firestore
-            .collection('CargoDelivery')
+            .collection('ContainerDelivery')
             .doc(deliveryId)
             .update({
               'status': 'in-progress',
               'confirmed_at': Timestamp.now(),
             });
       }
+
+      // ✅ UPDATE CONTAINERS COLLECTION WHEN STARTING DELIVERY
+      await _firestore
+          .collection('Containers')
+          .doc(containerId)
+          .update({
+            'status': 'in-progress',
+            'assigned_at': Timestamp.now(),
+            'assigned_to': user.uid,
+            'last_updated': Timestamp.now(),
+          });
     } else if (newStatus == 'delivered' || newStatus == 'cancelled') {
       if (deliveryQuery.docs.isNotEmpty) {
         // Update existing delivery record
         await _firestore
-            .collection('CargoDelivery')
+            .collection('ContainerDelivery')
             .doc(deliveryId)
             .update({
               'status': newStatus,
@@ -239,8 +296,8 @@ Future<void> _loadDeliveryStatus() async {
             });
       } else {
         // Create delivery record for delivered/cancelled status if it doesn't exist
-        await _firestore.collection('CargoDelivery').add({
-          'cargo_id': cargoId,
+        await _firestore.collection('ContainerDelivery').add({
+          'containerId': containerId,
           'courier_id': user.uid,
           'status': newStatus,
           'confirmed_at': Timestamp.now(),
@@ -249,17 +306,38 @@ Future<void> _loadDeliveryStatus() async {
           'remarks': 'Status updated to $newStatus by courier',
         });
       }
+
+      // UPDATE CONTAINER STATUS IN CONTAINERS COLLECTION
+      if (newStatus == 'delivered') {
+        await _firestore
+            .collection('Containers')
+            .doc(containerId)
+            .update({
+              'status': 'delivered',
+              'delivered_at': Timestamp.now(),
+              'delivered_by': user.uid,
+            });
+      } else if (newStatus == 'cancelled') {
+        await _firestore
+            .collection('Containers')
+            .doc(containerId)
+            .update({
+              'status': 'cancelled',
+              'cancelled_at': Timestamp.now(),
+              'cancelled_by': user.uid,
+            });
+      }
     }
 
     // Create notification for status update
     await _firestore.collection('Notifications').add({
       'userId': user.uid,
       'type': 'status_update',
-      'message': 'Cargo status updated to ${_getStatusText(newStatus)} for Container $_containerNo',
+      'message': 'Container status updated to ${_getStatusText(newStatus)} for Container $_containerNo',
       'timestamp': Timestamp.now(),
       'read': false,
-      'cargoId': cargoId,
-      'containerNo': _containerNo,
+      'containerId': containerId,
+      'containerNumber': _containerNo,
       'newStatus': newStatus,
     });
 
@@ -282,7 +360,7 @@ Future<void> _loadDeliveryStatus() async {
             context,
             MaterialPageRoute(
               builder: (context) => LiveLocationPage(
-                cargoData: _cargoData!,
+                containerData: _containerData!,
               ),
             ),
           );
@@ -290,18 +368,15 @@ Future<void> _loadDeliveryStatus() async {
       });
     }
   } catch (e) {
-    print('Error updating cargo status: $e');
+    print('Error updating container status: $e');
     _showErrorModal('Failed to update status: $e');
   } finally {
     setState(() {
       _isUpdatingStatus = false;
     });
   }
-  // Refresh the data by reloading delivery status
-    await _loadDeliveryStatus();
 }
 
-  // NEW METHOD: Show delivery started success modal
   void _showDeliveryStartedModal() {
     showDialog(
       context: context,
@@ -393,7 +468,7 @@ Future<void> _loadDeliveryStatus() async {
                       context,
                       MaterialPageRoute(
                         builder: (context) => LiveLocationPage(
-                          cargoData: _cargoData!,
+                          containerData: _containerData!,
                         ),
                       ),
                     );
@@ -558,14 +633,6 @@ Future<void> _loadDeliveryStatus() async {
     return date.toString();
   }
 
-  String _formatCurrency(dynamic value) {
-    if (value == null) return 'N/A';
-    if (value is int || value is double) {
-      return '\$${value.toStringAsFixed(2)}';
-    }
-    return value.toString();
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -597,7 +664,7 @@ Future<void> _loadDeliveryStatus() async {
           ),
           const SizedBox(height: 16),
           const Text(
-            'Loading cargo details...',
+            'Loading container details...',
             style: TextStyle(
               fontSize: 16,
               color: Color(0xFF64748B),
@@ -646,22 +713,20 @@ Future<void> _loadDeliveryStatus() async {
   }
 
   Widget _buildContent() {
-    final cargo = _cargoData ?? {};
+    final container = _containerData ?? {};
     final currentStatus = _status.toLowerCase();
     
-      // Determine if this is an available cargo (no delivery record or cancelled)
-    final isAvailableCargo = currentStatus == 'pending' || currentStatus == 'cancelled';
-
     return SingleChildScrollView(
       child: Column(
         children: [
+          // Header section
           Container(
             width: double.infinity,
             padding: EdgeInsets.fromLTRB(
               24,
-              MediaQuery.of(context).padding.top + 8, // Reduced from 16 to 8
+              MediaQuery.of(context).padding.top + 8,
               24,
-              16, // Reduced from 24 to 16
+              16,
             ),
             decoration: const BoxDecoration(
               gradient: LinearGradient(
@@ -698,7 +763,7 @@ Future<void> _loadDeliveryStatus() async {
                 ),
                 const SizedBox(width: 12),
                 const Text(
-                  "Cargo Details",
+                  "Container Details",
                   style: TextStyle(
                     fontSize: 20,
                     fontWeight: FontWeight.w700,
@@ -707,11 +772,11 @@ Future<void> _loadDeliveryStatus() async {
                 ),
               ],
             ),
-        ),
+          ),
 
           const SizedBox(height: 16),
 
-          // Cargo Status Card
+          // Container Status Card
           _buildCard(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -719,13 +784,13 @@ Future<void> _loadDeliveryStatus() async {
                 Row(
                   children: [
                     const Icon(
-                      Icons.assignment_rounded,
+                      Icons.local_shipping_rounded,
                       color: Color(0xFF3B82F6),
                       size: 20,
                     ),
                     const SizedBox(width: 8),
                     const Text(
-                      "Cargo Status",
+                      "Container Status",
                       style: TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.w700,
@@ -752,7 +817,7 @@ Future<void> _loadDeliveryStatus() async {
                           Row(
                             children: [
                               const Icon(
-                                Icons.local_shipping_rounded,
+                                Icons.numbers_rounded,
                                 color: Color(0xFF64748B),
                                 size: 16,
                               ),
@@ -799,31 +864,13 @@ Future<void> _loadDeliveryStatus() async {
                       Row(
                         children: [
                           const Icon(
-                            Icons.fingerprint_rounded,
-                            color: Color(0xFF64748B),
-                            size: 14,
-                          ),
-                          const SizedBox(width: 6),
-                          Text(
-                            "Cargo ID: ${_cargoId.isEmpty ? 'N/A' : _cargoId}",
-                            style: const TextStyle(
-                              fontSize: 14,
-                              color: Color(0xFF64748B),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          const Icon(
                             Icons.calendar_today_rounded,
                             color: Color(0xFF64748B),
                             size: 14,
                           ),
                           const SizedBox(width: 6),
                           Text(
-                            "Created: ${_formatDate(cargo['created_at'])}",
+                            "Created: ${_formatDate(container['dateCreated'])}",
                             style: const TextStyle(
                               fontSize: 14,
                               color: Color(0xFF64748B),
@@ -872,7 +919,7 @@ Future<void> _loadDeliveryStatus() async {
 
           const SizedBox(height: 16),
 
-          // Cargo Information
+          // Container Information
           _buildCard(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -886,7 +933,7 @@ Future<void> _loadDeliveryStatus() async {
                     ),
                     const SizedBox(width: 8),
                     const Text(
-                      "Cargo Information",
+                      "Container Information",
                       style: TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.w700,
@@ -897,18 +944,17 @@ Future<void> _loadDeliveryStatus() async {
                 ),
                 const SizedBox(height: 16),
                 _buildInfoRow(Icons.numbers_rounded, "Container No:", _containerNo),
-                _buildInfoRow(Icons.description_rounded, "Description:", cargo['description'] ?? 'N/A'),
-                _buildInfoRow(Icons.code_rounded, "HS Code:", cargo['hs_code'] ?? 'N/A'),
-                _buildInfoRow(Icons.format_list_numbered_rounded, "Item Number:", cargo['item_number']?.toString() ?? 'N/A'),
-                _buildInfoRow(Icons.inventory_rounded, "Quantity:", cargo['quantity']?.toString() ?? 'N/A'),
-                _buildInfoRow(Icons.attach_money_rounded, "Value:", _formatCurrency(cargo['value'])),
-                _buildInfoRow(Icons.fitness_center_rounded, "Weight:", "${cargo['weight']?.toString() ?? 'N/A'} kg"),
-                _buildInfoRow(Icons.place_rounded, "Origin:", _pickup),
+                _buildInfoRow(Icons.confirmation_number_rounded, "Seal Number:", container['sealNumber']?.toString() ?? 'N/A'),
+                _buildInfoRow(Icons.description_rounded, "Bill of Landing:", container['billOfLading']?.toString() ?? 'N/A'),
+                _buildInfoRow(Icons.person_rounded, "Consignee Name:", container['consigneeName']?.toString() ?? 'N/A'),
+                _buildInfoRow(Icons.location_on_rounded, "Consignee Address:", container['consigneeAddress']?.toString() ?? 'N/A'),
+                _buildInfoRow(Icons.person_outline_rounded, "Consignor Name:", container['consignorName']?.toString() ?? 'N/A'),
+                _buildInfoRow(Icons.business_rounded, "Consignor Address:", container['consignorAddress']?.toString() ?? 'N/A'),
+                _buildInfoRow(Icons.local_shipping_rounded, "Cargo Type:", container['cargoType']?.toString() ?? 'General'),
+                _buildInfoRow(Icons.flag_rounded, "Voyage ID:", container['voyageId']?.toString() ?? 'N/A'),
+                _buildInfoRow(Icons.priority_high_rounded, "Priority:", container['priority']?.toString() ?? 'normal'),
+                _buildInfoRow(Icons.place_rounded, "Port Location:", DECLARED_ORIGIN),
                 _buildInfoRow(Icons.flag_rounded, "Destination:", _destination),
-                if (cargo['additional_info'] != null && cargo['additional_info'].toString().isNotEmpty)
-                  _buildInfoRow(Icons.info_rounded, "Additional Info:", cargo['additional_info'].toString()),
-                if (cargo['submanifest_id'] != null)
-                  _buildInfoRow(Icons.list_alt_rounded, "Submanifest ID:", cargo['submanifest_id'].toString()),
               ],
             ),
           ),
@@ -966,8 +1012,8 @@ Future<void> _loadDeliveryStatus() async {
                         context,
                         MaterialPageRoute(
                           builder: (context) => LiveMapPage(
-                            cargoId: _cargoId,
-                            pickup: _pickup,
+                            containerId: _containerId,
+                            location: _pickup,
                             destination: _destination,
                           ),
                         ),

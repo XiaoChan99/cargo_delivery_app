@@ -25,8 +25,8 @@ class _NotificationsPageState extends State<NotificationsPage> {
     super.initState();
     _loadNotifications();
     _setupNotificationsListener();
-    // Delay cargo generation to avoid multiple index errors
-    Future.delayed(const Duration(seconds: 2), _generateCargoNotifications);
+    // Delay container generation to avoid multiple index errors
+    Future.delayed(const Duration(seconds: 2), _generateContainerNotifications);
   }
 
   void _setupNotificationsListener() {
@@ -139,8 +139,8 @@ class _NotificationsPageState extends State<NotificationsPage> {
     }
   }
 
-  // Simplified notification generation to avoid complex queries
-  Future<void> _generateCargoNotifications() async {
+  // Simplified notification generation using Containers collection
+  Future<void> _generateContainerNotifications() async {
     if (_indexError) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Please create Firebase index first. Check console for link.')),
@@ -152,40 +152,46 @@ class _NotificationsPageState extends State<NotificationsPage> {
       final currentUser = _auth.currentUser;
       if (currentUser == null) return;
 
-      // Get all cargo documents (simple query)
-      QuerySnapshot cargoSnapshot = await _firestore
-          .collection('Cargo')
+      // Get all container documents from Containers collection
+      QuerySnapshot containerSnapshot = await _firestore
+          .collection('Containers')
           .get();
 
       // Get all notifications to check for existing ones
       QuerySnapshot existingNotifications = await _firestore
           .collection('Notifications')
           .where('userId', isEqualTo: widget.userId)
-          .where('type', isEqualTo: 'new_cargo')
+          .where('type', isEqualTo: 'new_container')
           .get();
 
-      Set<String> existingCargoIds = {};
+      Set<String> existingContainerIds = {};
       for (var doc in existingNotifications.docs) {
         var notification = doc.data() as Map<String, dynamic>;
-        if (notification['cargoId'] != null) {
-          existingCargoIds.add(notification['cargoId'].toString());
+        if (notification['containerId'] != null) {
+          existingContainerIds.add(notification['containerId'].toString());
         }
       }
 
-      // Create notifications for cargos that don't have notifications yet
+      // Create notifications for containers that don't have notifications yet
       int newNotifications = 0;
-      for (var doc in cargoSnapshot.docs) {
-        if (!existingCargoIds.contains(doc.id)) {
-          var cargoData = doc.data() as Map<String, dynamic>;
+      for (var doc in containerSnapshot.docs) {
+        if (!existingContainerIds.contains(doc.id)) {
+          var containerData = doc.data() as Map<String, dynamic>;
+          
+          // Extract relevant container information
+          String containerNumber = containerData['containerNumber'] ?? 'N/A';
+          String destination = containerData['destination'] ?? 'Unknown';
+          String status = containerData['status'] ?? 'Unknown';
+          String consigneeName = containerData['consigneeName'] ?? 'Unknown';
           
           await _firestore.collection('Notifications').add({
             'userId': widget.userId,
-            'type': 'new_cargo',
-            'message': 'New cargo available: ${cargoData['description'] ?? 'Cargo'} from ${cargoData['origin'] ?? 'Unknown'} to ${cargoData['destination'] ?? 'Unknown'}',
+            'type': 'new_container',
+            'message': 'New container available: $containerNumber to $destination. Status: $status. Consignee: $consigneeName',
             'timestamp': Timestamp.now(),
             'read': false,
-            'cargoId': doc.id,
-            'containerNo': 'CONT-${cargoData['item_number'] ?? 'N/A'}',
+            'containerId': doc.id,
+            'containerNo': containerNumber,
           });
           newNotifications++;
         }
@@ -195,10 +201,10 @@ class _NotificationsPageState extends State<NotificationsPage> {
       await _loadNotifications();
       
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Generated $newNotifications new cargo notifications')),
+        SnackBar(content: Text('Generated $newNotifications new container notifications')),
       );
     } catch (e) {
-      print('Error generating cargo notifications: $e');
+      print('Error generating container notifications: $e');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Error: $e')),
       );
@@ -215,7 +221,7 @@ class _NotificationsPageState extends State<NotificationsPage> {
         return Icons.check_circle_outline;
       case 'error':
         return Icons.error_outline;
-      case 'new_cargo':
+      case 'new_container':
         return Icons.local_shipping;
       case 'delivery_assigned':
         return Icons.assignment_turned_in;
@@ -242,7 +248,7 @@ class _NotificationsPageState extends State<NotificationsPage> {
       case 'error':
       case 'delivery_cancelled':
         return const Color(0xFFEF4444);
-      case 'new_cargo':
+      case 'new_container':
         return const Color(0xFF8B5CF6);
       case 'delivery_assigned':
         return const Color(0xFF6366F1);
@@ -255,8 +261,8 @@ class _NotificationsPageState extends State<NotificationsPage> {
 
   String _getNotificationTitle(String type) {
     switch (type) {
-      case 'new_cargo':
-        return 'New Cargo Available';
+      case 'new_container':
+        return 'New Container Available';
       case 'delivery_assigned':
         return 'Delivery Assigned';
       case 'delivery_completed':
@@ -533,7 +539,7 @@ class _NotificationsPageState extends State<NotificationsPage> {
                     ),
                   IconButton(
                     icon: const Icon(Icons.refresh, color: Colors.white),
-                    onPressed: _generateCargoNotifications,
+                    onPressed: _generateContainerNotifications,
                     tooltip: 'Refresh Notifications',
                   ),
                 ],
@@ -585,7 +591,7 @@ class _NotificationsPageState extends State<NotificationsPage> {
                             ),
                             const SizedBox(height: 8),
                             ElevatedButton(
-                              onPressed: _generateCargoNotifications,
+                              onPressed: _generateContainerNotifications,
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: const Color(0xFF3B82F6),
                                 foregroundColor: Colors.white,

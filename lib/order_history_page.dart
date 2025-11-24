@@ -55,10 +55,10 @@ class _OrderHistoryPageState extends State<OrderHistoryPage> {
   Future<void> _loadCompletedDeliveries() async {
     try {
       QuerySnapshot deliverySnapshot = await _firestore
-          .collection('CargoDelivery')
+          .collection('ContainerDelivery')
           .where('courier_id', isEqualTo: _currentUser!.uid)
           .where('status', whereIn: ['delivered', 'completed'])
-          .orderBy('confirmed_at', descending: true)
+          .orderBy('created_at', descending: true)
           .get();
 
       List<Map<String, dynamic>> completedDeliveries = [];
@@ -66,38 +66,36 @@ class _OrderHistoryPageState extends State<OrderHistoryPage> {
       for (var doc in deliverySnapshot.docs) {
         var deliveryData = doc.data() as Map<String, dynamic>;
         try {
-          DocumentSnapshot cargoDoc = await _firestore
-              .collection('Cargo')
-              .doc(deliveryData['cargo_id'].toString())
+          DocumentSnapshot containerDoc = await _firestore
+              .collection('Containers')
+              .doc(deliveryData['containerId'].toString())
               .get();
 
-          if (cargoDoc.exists) {
-            var cargoData = cargoDoc.data() as Map<String, dynamic>;
+          if (containerDoc.exists) {
+            var containerData = containerDoc.data() as Map<String, dynamic>;
             
             Map<String, dynamic> combinedData = {
               'delivery_id': doc.id,
-              'cargo_id': deliveryData['cargo_id'],
-              'containerNo': 'CONT-${cargoData['item_number'] ?? 'N/A'}',
+              'containerId': deliveryData['containerId'],
+              'container_number': deliveryData['container_number'] ?? containerData['container_number'] ?? 'N/A',
               'status': deliveryData['status'] ?? 'delivered',
-              'pickupLocation': cargoData['origin'] ?? 'Port Terminal',
-              'destination': cargoData['destination'] ?? 'Delivery Point',
-              'confirmed_at': deliveryData['confirmed_at'],
-              'completed_at': deliveryData['completed_at'] ?? deliveryData['confirmed_at'],
+              'destination': deliveryData['destination'] ?? containerData['consigneeAddress'] ?? 'Delivery Point',
+              'created_at': deliveryData['created_at'],
+              'updated_at': deliveryData['updated_at'],
               'courier_id': deliveryData['courier_id'],
-              'description': cargoData['description'] ?? 'N/A',
-              'weight': cargoData['weight'] ?? 0.0,
-              'value': cargoData['value'] ?? 0.0,
-              'hs_code': cargoData['hs_code'] ?? 'N/A',
-              'quantity': cargoData['quantity'] ?? 0,
-              'item_number': cargoData['item_number'] ?? 0,
+              'consignee_name': deliveryData['consignee_name'] ?? containerData['consigneeName'] ?? 'N/A',
+              'consignee_address': deliveryData['destination'] ?? containerData['consigneeAddress'] ?? 'N/A',
+              'seaL_number': deliveryData['seaL_number'] ?? 'N/A',
+              'priority': deliveryData['priority'] ?? 'normal',
               'proof_image': deliveryData['proof_image'],
-              'confirmed_by': deliveryData['confirmed_by'],
               'remarks': deliveryData['remarks'] ?? '',
+              'billOfLading': containerData['billOfLading'] ?? 'N/A',
+              'cargoType': containerData['cargoType'] ?? 'general',
             };
             completedDeliveries.add(combinedData);
           }
         } catch (e) {
-          print('Error loading cargo details for delivery: $e');
+          print('Error loading container details for delivery: $e');
         }
       }
 
@@ -114,10 +112,10 @@ class _OrderHistoryPageState extends State<OrderHistoryPage> {
   Future<void> _loadCancelledDeliveries() async {
     try {
       QuerySnapshot deliverySnapshot = await _firestore
-          .collection('CargoDelivery')
+          .collection('ContainerDelivery')
           .where('courier_id', isEqualTo: _currentUser!.uid)
           .where('status', whereIn: ['cancelled', 'rejected'])
-          .orderBy('confirmed_at', descending: true)
+          .orderBy('created_at', descending: true)
           .get();
 
       List<Map<String, dynamic>> cancelledDeliveries = [];
@@ -125,37 +123,36 @@ class _OrderHistoryPageState extends State<OrderHistoryPage> {
       for (var doc in deliverySnapshot.docs) {
         var deliveryData = doc.data() as Map<String, dynamic>;
         try {
-          DocumentSnapshot cargoDoc = await _firestore
-              .collection('Cargo')
-              .doc(deliveryData['cargo_id'].toString())
+          DocumentSnapshot containerDoc = await _firestore
+              .collection('Containers')
+              .doc(deliveryData['containerId'].toString())
               .get();
 
-          if (cargoDoc.exists) {
-            var cargoData = cargoDoc.data() as Map<String, dynamic>;
+          if (containerDoc.exists) {
+            var containerData = containerDoc.data() as Map<String, dynamic>;
             
             Map<String, dynamic> combinedData = {
               'delivery_id': doc.id,
-              'cargo_id': deliveryData['cargo_id'],
-              'containerNo': 'CONT-${cargoData['item_number'] ?? 'N/A'}',
+              'containerId': deliveryData['containerId'],
+              'container_number': deliveryData['container_number'] ?? containerData['container_number'] ?? 'N/A',
               'status': deliveryData['status'] ?? 'cancelled',
-              'pickupLocation': cargoData['origin'] ?? 'Port Terminal',
-              'destination': cargoData['destination'] ?? 'Delivery Point',
-              'confirmed_at': deliveryData['confirmed_at'],
-              'cancelled_at': deliveryData['cancelled_at'] ?? deliveryData['confirmed_at'],
+              'destination': deliveryData['destination'] ?? containerData['consigneeAddress'] ?? 'Delivery Point',
+              'created_at': deliveryData['created_at'],
+              'updated_at': deliveryData['updated_at'],
               'courier_id': deliveryData['courier_id'],
-              'description': cargoData['description'] ?? 'N/A',
-              'weight': cargoData['weight'] ?? 0.0,
-              'value': cargoData['value'] ?? 0.0,
-              'hs_code': cargoData['hs_code'] ?? 'N/A',
-              'quantity': cargoData['quantity'] ?? 0,
-              'item_number': cargoData['item_number'] ?? 0,
+              'consignee_name': deliveryData['consignee_name'] ?? containerData['consigneeName'] ?? 'N/A',
+              'consignee_address': deliveryData['destination'] ?? containerData['consigneeAddress'] ?? 'N/A',
+              'seaL_number': deliveryData['seaL_number'] ?? 'N/A',
+              'priority': deliveryData['priority'] ?? 'normal',
               'cancellation_reason': deliveryData['cancellation_reason'] ?? 'No reason provided',
               'cancelled_by': deliveryData['cancelled_by'] ?? 'Unknown',
+              'billOfLading': containerData['billOfLading'] ?? 'N/A',
+              'cargoType': containerData['cargoType'] ?? 'general',
             };
             cancelledDeliveries.add(combinedData);
           }
         } catch (e) {
-          print('Error loading cargo details for cancelled delivery: $e');
+          print('Error loading container details for cancelled delivery: $e');
         }
       }
 
@@ -172,10 +169,10 @@ class _OrderHistoryPageState extends State<OrderHistoryPage> {
   Future<void> _loadDelayedDeliveries() async {
     try {
       QuerySnapshot deliverySnapshot = await _firestore
-          .collection('CargoDelivery')
+          .collection('ContainerDelivery')
           .where('courier_id', isEqualTo: _currentUser!.uid)
           .where('status', whereIn: ['delayed', 'overdue'])
-          .orderBy('confirmed_at', descending: true)
+          .orderBy('created_at', descending: true)
           .get();
 
       List<Map<String, dynamic>> delayedDeliveries = [];
@@ -183,36 +180,36 @@ class _OrderHistoryPageState extends State<OrderHistoryPage> {
       for (var doc in deliverySnapshot.docs) {
         var deliveryData = doc.data() as Map<String, dynamic>;
         try {
-          DocumentSnapshot cargoDoc = await _firestore
-              .collection('Cargo')
-              .doc(deliveryData['cargo_id'].toString())
+          DocumentSnapshot containerDoc = await _firestore
+              .collection('Containers')
+              .doc(deliveryData['containerId'].toString())
               .get();
 
-          if (cargoDoc.exists) {
-            var cargoData = cargoDoc.data() as Map<String, dynamic>;
+          if (containerDoc.exists) {
+            var containerData = containerDoc.data() as Map<String, dynamic>;
             
             Map<String, dynamic> combinedData = {
               'delivery_id': doc.id,
-              'cargo_id': deliveryData['cargo_id'],
-              'containerNo': 'CONT-${cargoData['item_number'] ?? 'N/A'}',
+              'containerId': deliveryData['containerId'],
+              'container_number': deliveryData['container_number'] ?? containerData['container_number'] ?? 'N/A',
               'status': deliveryData['status'] ?? 'delayed',
-              'pickupLocation': cargoData['origin'] ?? 'Port Terminal',
-              'destination': cargoData['destination'] ?? 'Delivery Point',
-              'confirmed_at': deliveryData['confirmed_at'],
-              'estimated_delivery': deliveryData['estimated_delivery'],
-              'delay_reason': deliveryData['delay_reason'] ?? 'Unexpected delay',
+              'destination': deliveryData['destination'] ?? containerData['consigneeAddress'] ?? 'Delivery Point',
+              'created_at': deliveryData['created_at'],
+              'updated_at': deliveryData['updated_at'],
               'courier_id': deliveryData['courier_id'],
-              'description': cargoData['description'] ?? 'N/A',
-              'weight': cargoData['weight'] ?? 0.0,
-              'value': cargoData['value'] ?? 0.0,
-              'hs_code': cargoData['hs_code'] ?? 'N/A',
-              'quantity': cargoData['quantity'] ?? 0,
-              'item_number': cargoData['item_number'] ?? 0,
+              'consignee_name': deliveryData['consignee_name'] ?? containerData['consigneeName'] ?? 'N/A',
+              'consignee_address': deliveryData['destination'] ?? containerData['consigneeAddress'] ?? 'N/A',
+              'seaL_number': deliveryData['seaL_number'] ?? 'N/A',
+              'priority': deliveryData['priority'] ?? 'normal',
+              'delay_reason': deliveryData['delay_reason'] ?? 'Unexpected delay',
+              'estimated_delivery': deliveryData['estimated_delivery'],
+              'billOfLading': containerData['billOfLading'] ?? 'N/A',
+              'cargoType': containerData['cargoType'] ?? 'general',
             };
             delayedDeliveries.add(combinedData);
           }
         } catch (e) {
-          print('Error loading cargo details for delayed delivery: $e');
+          print('Error loading container details for delayed delivery: $e');
         }
       }
 
@@ -308,7 +305,7 @@ class _OrderHistoryPageState extends State<OrderHistoryPage> {
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Text(
-                  delivery['containerNo'] ?? 'N/A',
+                  delivery['container_number'] ?? 'N/A',
                   style: const TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.w600,
@@ -345,18 +342,18 @@ class _OrderHistoryPageState extends State<OrderHistoryPage> {
             
             const SizedBox(height: 12),
             
-            // Route information
+            // Consignee information
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(Icons.place, size: 16, color: Colors.grey[600]),
+                Icon(Icons.person, size: 16, color: Colors.grey[600]),
                 const SizedBox(width: 6),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        "From: ${delivery['pickupLocation'] ?? 'Port Terminal'}",
+                        "Consignee: ${delivery['consignee_name'] ?? 'N/A'}",
                         style: TextStyle(
                           fontSize: 14,
                           color: Colors.grey[700],
@@ -364,7 +361,7 @@ class _OrderHistoryPageState extends State<OrderHistoryPage> {
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        "To: ${delivery['destination'] ?? 'Delivery Point'}",
+                        "Destination: ${delivery['destination'] ?? 'N/A'}",
                         style: TextStyle(
                           fontSize: 14,
                           color: Colors.grey[700],
@@ -386,16 +383,70 @@ class _OrderHistoryPageState extends State<OrderHistoryPage> {
                 Text(
                   _formatDateTime(
                     isCompleted 
-                      ? delivery['completed_at'] ?? delivery['confirmed_at']
+                      ? delivery['updated_at'] ?? delivery['created_at']
                       : isCancelled
-                        ? delivery['cancelled_at'] ?? delivery['confirmed_at']
-                        : delivery['estimated_delivery'] ?? delivery['confirmed_at']
+                        ? delivery['updated_at'] ?? delivery['created_at']
+                        : delivery['estimated_delivery'] ?? delivery['created_at']
                   ),
                   style: TextStyle(
                     fontSize: 13,
                     color: Colors.grey[700],
                   ),
                 ),
+              ],
+            ),
+            
+            // Additional cargo info
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 12,
+              children: [
+                if (delivery['billOfLading'] != null && delivery['billOfLading'] != 'N/A')
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.receipt, size: 14, color: Colors.grey[600]),
+                      const SizedBox(width: 4),
+                      Text(
+                        "B/L: ${delivery['billOfLading']}",
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey[600],
+                        ),
+                      ),
+                    ],
+                  ),
+                if (delivery['seaL_number'] != null && delivery['seaL_number'] != 'N/A')
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.security, size: 14, color: Colors.grey[600]),
+                      const SizedBox(width: 4),
+                      Text(
+                        "Seal: ${delivery['seaL_number']}",
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey[600],
+                        ),
+                      ),
+                    ],
+                  ),
+                if (delivery['cargoType'] != null && delivery['cargoType'] != 'general')
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: Colors.blue[50],
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(
+                      delivery['cargoType'],
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Colors.blue[700],
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
               ],
             ),
             
@@ -454,14 +505,15 @@ class _OrderHistoryPageState extends State<OrderHistoryPage> {
               ),
             ],
             
-            // Description
-            if (delivery['description'] != null && delivery['description'] != 'N/A') ...[
+            // Remarks
+            if (delivery['remarks'] != null && delivery['remarks'].isNotEmpty) ...[
               const SizedBox(height: 8),
               Text(
-                delivery['description'],
+                "Remarks: ${delivery['remarks']}",
                 style: TextStyle(
                   fontSize: 13,
                   color: Colors.grey[600],
+                  fontStyle: FontStyle.italic,
                 ),
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
