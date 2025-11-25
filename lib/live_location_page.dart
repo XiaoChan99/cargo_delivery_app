@@ -902,69 +902,106 @@ Future<void> _generateRealisticDeliveryRoute() async {
   }
 
   Future<void> _reportDelay(String reason, DateTime estimatedTime) async {
-    try {
-      final user = _auth.currentUser;
-      if (user == null) {
-        _showErrorModal('User not logged in');
-        return;
-      }
-
-      await _firestore
-          .collection('Containers')
-          .doc(_containerId)
-          .update({
-            'status': 'delayed',
-            'lastUpdated': Timestamp.now(),
-          });
-
-      QuerySnapshot deliveryQuery = await _firestore
-          .collection('ContainerDelivery')
-          .where('container_id', isEqualTo: _containerId)
-          .limit(1)
-          .get();
-
-      final delayData = {
-        'status': 'delayed',
-        'remarks': 'Delay reported: $reason. Estimated new arrival: ${DateFormat('MMM dd, yyyy - HH:mm').format(estimatedTime)}',
-        'updated_at': Timestamp.now(),
-        'estimated_arrival': Timestamp.fromDate(estimatedTime),
-        'delay_reason': reason,
-      };
-
-      if (deliveryQuery.docs.isNotEmpty) {
-        await deliveryQuery.docs.first.reference.update(delayData);
-      } else {
-        await _firestore.collection('ContainerDelivery').add({
-          'container_id': _containerId,
-          'courier_id': user.uid,
-          ...delayData,
-          'created_at': Timestamp.now(),
-        });
-      }
-
-      await _firestore.collection('Notifications').add({
-        'userId': user.uid,
-        'type': 'delivery_delayed',
-        'message': 'Delivery delayed for Container $_containerNo: $reason',
-        'timestamp': Timestamp.now(),
-        'read': false,
-        'containerId': _containerId,
-        'containerNo': _containerNo,
-      });
-
-      setState(() {
-        _containerData?['status'] = 'delayed';
-        _deliveryData?['status'] = 'delayed';
-        _selectedDelayTime = null;
-      });
-
-      _showSuccessModal('Delay reported successfully!');
-    } catch (e) {
-      print('Error reporting delay: $e');
-      _showErrorModal('Failed to report delay: $e');
+  try {
+    final user = _auth.currentUser;
+    if (user == null) {
+      _showErrorModal('User not logged in');
+      return;
     }
-  }
 
+    // 1) Update Containers collection
+    await _firestore.collection('Containers').doc(_containerId).update({
+      'status': 'delayed',
+      'lastUpdated': Timestamp.now(),
+    });
+
+    // 2) Find and update existing ContainerDelivery document
+    DocumentReference? deliveryDocRef;
+    bool foundExistingDelivery = false;
+
+    // Helper to try a query and return first doc ref if found
+    Future<DocumentReference?> tryQuery(String field, dynamic value) async {
+      try {
+        final q = await _firestore
+            .collection('ContainerDelivery')
+            .where(field, isEqualTo: value)
+            .limit(1)
+            .get();
+        if (q.docs.isNotEmpty) {
+          return q.docs.first.reference;
+        }
+      } catch (e) {
+        print('Debug: query by $field with value $value failed: $e');
+      }
+      return null;
+    }
+
+    final String containerIdStr = _containerId?.toString() ?? '';
+    final String containerNoStr = _containerNo?.toString() ?? '';
+
+    // Try multiple common field names to find existing delivery document
+    final List<Map<String, dynamic>> attempts = [
+      {'field': 'container_id', 'value': containerIdStr},
+      {'field': 'containerId', 'value': containerIdStr},
+      {'field': 'container_no', 'value': containerNoStr},
+      {'field': 'container_number', 'value': containerNoStr},
+      {'field': 'containerNumber', 'value': containerNoStr},
+    ];
+
+    for (final attempt in attempts) {
+      final field = attempt['field'] as String;
+      final value = attempt['value'];
+      if (value == null || value.toString().isEmpty) continue;
+      
+      final ref = await tryQuery(field, value);
+      if (ref != null) {
+        deliveryDocRef = ref;
+        foundExistingDelivery = true;
+        print('Info: found existing ContainerDelivery by "$field" = "$value"; doc: ${ref.path}');
+        break;
+      }
+    }
+
+    final delayData = {
+      'status': 'delayed',
+      'remarks': 'Delay reported: $reason. Estimated new arrival: ${DateFormat('MMM dd, yyyy - HH:mm').format(estimatedTime)}',
+      'updated_at': Timestamp.now(),
+      'estimated_arrival': Timestamp.fromDate(estimatedTime),
+      'delay_reason': reason,
+    };
+
+    // 3) Only update if existing document found, don't create new one
+    if (foundExistingDelivery && deliveryDocRef != null) {
+      await deliveryDocRef.update(delayData);
+      print('Info: Updated existing ContainerDelivery status to delayed');
+    } else {
+      print('Info: No existing ContainerDelivery found to update for container $containerIdStr. Only Container status updated.');
+      // Do not create a new ContainerDelivery document for delay reports
+    }
+
+    // 4) Create notification
+    await _firestore.collection('Notifications').add({
+      'userId': user.uid,
+      'type': 'delivery_delayed',
+      'message': 'Delivery delayed for Container $_containerNo: $reason',
+      'timestamp': Timestamp.now(),
+      'read': false,
+      'containerId': _containerId,
+      'containerNo': _containerNo,
+    });
+
+    setState(() {
+      _containerData?['status'] = 'delayed';
+      _deliveryData?['status'] = 'delayed';
+      _selectedDelayTime = null;
+    });
+
+    _showSuccessModal('Delay reported successfully! Container status updated to delayed.');
+  } catch (e) {
+    print('Error reporting delay: $e');
+    _showErrorModal('Failed to report delay: $e');
+  }
+}
   void _showSuccessModal(String message) {
     showDialog(
       context: context,

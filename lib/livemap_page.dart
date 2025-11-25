@@ -86,9 +86,10 @@ class _LiveMapPageState extends State<LiveMapPage> {
         return;
       }
 
-      // Load ALL containers (no status filter)
+      // Load ONLY containers with "ready_for_delivery" status
       QuerySnapshot containerSnapshot = await _firestore
           .collection('Containers')
+          .where('status', isEqualTo: 'ready_for_delivery')
           .get();
 
       // Load ALL container deliveries (we need this to determine assignments & tracking info)
@@ -122,6 +123,11 @@ class _LiveMapPageState extends State<LiveMapPage> {
         var containerData = doc.data() as Map<String, dynamic>;
         String containerId = doc.id;
         
+        // Ensure container has "ready_for_delivery" status in Containers collection
+        if (containerData['status'] != 'ready_for_delivery') {
+          continue;
+        }
+
         // Determine status: prefer status from ContainerDelivery, otherwise default to available
         String status = 'available';
         if (containerDeliveryStatus.containsKey(containerId)) {
@@ -588,7 +594,8 @@ class _LiveMapPageState extends State<LiveMapPage> {
   void _setupRealtimeListeners() {
     _containerSubscription = _firestore
         .collection('Containers')
-        .snapshots() // Listen to all container documents
+        .where('status', isEqualTo: 'ready_for_delivery')
+        .snapshots() // Listen only to ready_for_delivery containers
         .listen((snapshot) {
       _loadAvailableAndAcceptedContainers();
     });
@@ -1309,6 +1316,30 @@ class LiveMapWidget extends StatelessWidget {
     return distance(coords, cebu) > 1000; // 1km in meters
   }
 
+  // Build a container icon marker for destination points
+  Widget _buildContainerIconMarker(Color backgroundColor, Color iconColor) {
+    return Container(
+      width: 40,
+      height: 40,
+      decoration: BoxDecoration(
+        color: backgroundColor,
+        shape: BoxShape.circle,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.2),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Icon(
+        Icons.inventory_2, // Container icon
+        color: Colors.white,
+        size: 24,
+      ),
+    );
+  }
+
   // Build a simple styled container/truck marker that visually leans toward the provided image
   Widget _buildContainerMarker(BuildContext context, Color backgroundColor, Color cabColor) {
     return SizedBox(
@@ -1444,7 +1475,7 @@ class LiveMapWidget extends StatelessWidget {
           ),
         
         // Destination points for active deliveries
-        // CHANGED: use the same location icon but with RED background (as requested)
+        // CHANGED: Use container icon instead of location icon for destination points
         for (final route in deliveryRoutes)
           MarkerLayer(
             markers: [
@@ -1454,23 +1485,9 @@ class LiveMapWidget extends StatelessWidget {
                 height: 40,
                 child: GestureDetector(
                   onTap: () => onDestinationTap(route.delivery),
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFEF4444), // RED background for destination
-                      shape: BoxShape.circle,
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(0.2),
-                          blurRadius: 8,
-                          offset: const Offset(0, 2),
-                        ),
-                      ],
-                    ),
-                    child: const Icon(
-                      Icons.location_on, // same icon as pickup but red background
-                      color: Colors.white,
-                      size: 24,
-                    ),
+                  child: _buildContainerIconMarker(
+                    const Color(0xFFEF4444), // RED background for destination
+                    Colors.white,
                   ),
                 ),
               ),

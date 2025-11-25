@@ -50,6 +50,22 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
 
   List<Map<String, dynamic>> _availableContainers = [];
   List<Map<String, dynamic>> _inProgressDeliveries = [];
+  
+  // Filter variables
+  String _selectedStatusFilter = 'All';
+  final List<String> _statusFilters = [
+    'All',
+    'Pending',
+    'Accepted',
+    'Scheduled',
+    'Assigned',
+    'In Progress',
+    'In Transit',
+    'Delayed',
+    'Delivered',
+    'Confirmed',
+    'Cancelled'
+  ];
 
   @override
   void initState() {
@@ -98,111 +114,111 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
   }
 
   Future<void> _loadAvailableContainers() async {
-  try {
-    print('=== DEBUG SchedulePage: Loading available containers ===');
-    
-    QuerySnapshot containerSnapshot = await _firestore
-        .collection('Containers')
-        .orderBy('dateCreated', descending: true)
-        .get();
-
-    print('DEBUG: Found ${containerSnapshot.docs.length} total containers');
-    
-    // Print all containers for debugging
-    for (var doc in containerSnapshot.docs) {
-      var containerData = doc.data() as Map<String, dynamic>;
-      print('DEBUG Container: ${doc.id}');
-      print('  - ContainerNumber: ${containerData['containerNumber']}');
-      print('  - AllocationStatus: ${containerData['allocationStatus']}');
-      print('  - Has allocationStatus field: ${containerData.containsKey('allocationStatus')}');
-    }
-
-    QuerySnapshot deliverySnapshot = await _firestore
-        .collection('ContainerDelivery')
-        .get();
-
-    print('DEBUG: Found ${deliverySnapshot.docs.length} delivery records');
-    
-    Set<String> assignedContainerIds = {};
-    Map<String, String> containerDeliveryStatus = {};
-    
-    for (var doc in deliverySnapshot.docs) {
-      var deliveryData = doc.data() as Map<String, dynamic>;
-      // Check both possible field names
-      String? containerId = deliveryData['containerId'] ?? deliveryData['container_id'];
-      if (containerId != null) {
-        assignedContainerIds.add(containerId.toString());
-        containerDeliveryStatus[containerId.toString()] = deliveryData['status']?.toString().toLowerCase() ?? '';
-        print('DEBUG Delivery: Container $containerId has status: ${deliveryData['status']}');
-      }
-    }
-
-    List<Map<String, dynamic>> availableContainers = [];
-    for (var doc in containerSnapshot.docs) {
-      var containerData = doc.data() as Map<String, dynamic>;
-      String containerId = doc.id;
+    try {
+      print('=== DEBUG SchedulePage: Loading available containers ===');
       
-      // Get allocation status
-      String allocationStatus = (containerData['allocationStatus']?.toString().toLowerCase() ?? '').trim();
-      String deliveryStatus = containerDeliveryStatus[containerId] ?? '';
+      QuerySnapshot containerSnapshot = await _firestore
+          .collection('Containers')
+          .orderBy('dateCreated', descending: true)
+          .get();
 
-      print('DEBUG Processing: $containerId');
-      print('  - Allocation status: "$allocationStatus"');
-      print('  - Delivery status: "$deliveryStatus"');
-      print('  - Has delivery record: ${assignedContainerIds.contains(containerId)}');
+      print('DEBUG: Found ${containerSnapshot.docs.length} total containers');
+      
+      QuerySnapshot deliverySnapshot = await _firestore
+          .collection('ContainerDelivery')
+          .get();
 
-      // Only include containers that are RELEASED and not assigned OR have cancelled status
-      bool shouldInclude = false;
-      if (allocationStatus == 'released') {
-        if (!assignedContainerIds.contains(containerId) || 
-            deliveryStatus == 'cancelled' || 
-            deliveryStatus == '') {
-          shouldInclude = true;
+      print('DEBUG: Found ${deliverySnapshot.docs.length} delivery records');
+      
+      Set<String> assignedContainerIds = {};
+      Map<String, String> containerDeliveryStatus = {};
+      Map<String, String> containerDeliveryCourier = {};
+      
+      for (var doc in deliverySnapshot.docs) {
+        var deliveryData = doc.data() as Map<String, dynamic>;
+        String? containerId = deliveryData['containerId'] ?? deliveryData['container_id'];
+        if (containerId != null) {
+          assignedContainerIds.add(containerId.toString());
+          containerDeliveryStatus[containerId.toString()] = deliveryData['status']?.toString().toLowerCase() ?? '';
+          containerDeliveryCourier[containerId.toString()] = deliveryData['courier_id']?.toString() ?? '';
+          print('DEBUG Delivery: Container $containerId has status: ${deliveryData['status']}');
         }
       }
 
-      print('  - Should include: $shouldInclude');
+      List<Map<String, dynamic>> availableContainers = [];
+      for (var doc in containerSnapshot.docs) {
+        var containerData = doc.data() as Map<String, dynamic>;
+        String containerId = doc.id;
+        
+        // Get allocation status
+        String allocationStatus = (containerData['allocationStatus']?.toString().toLowerCase() ?? '').trim();
+        String deliveryStatus = containerDeliveryStatus[containerId] ?? '';
+        String deliveryCourier = containerDeliveryCourier[containerId] ?? '';
+        final currentUserId = _auth.currentUser?.uid;
 
-      if (shouldInclude) {
-        Map<String, dynamic> combinedData = {
-          'containerId': containerId,
-          'containerNumber': containerData['containerNumber']?.toString() ?? 'N/A',
-          'sealNumber': containerData['sealNumber']?.toString() ?? 'N/A',
-          'billOfLading': containerData['billOfLading']?.toString() ?? 'N/A',
-          'consigneeName': containerData['consignedName']?.toString() ?? 'N/A',
-          'consigneeAddress': containerData['consignedAddress']?.toString() ?? 'N/A',
-          'consignorName': containerData['consignorName']?.toString() ?? 'N/A',
-          'consignorAddress': containerData['consignorAddress']?.toString() ?? 'N/A',
-          'priority': containerData['priority']?.toString() ?? 'normal',
-          'deliveredBy': containerData['deliveredBy']?.toString() ?? '',
-          'voyageId': containerData['voyageId']?.toString() ?? '',
-          'location': DECLARED_ORIGIN,
-          'destination': containerData['destination']?.toString() ?? 'Delivery Point',
-          'cargoType': containerData['cargoType']?.toString() ?? 'General',
-          'status': deliveryStatus.isNotEmpty ? deliveryStatus : 'pending',
-          'allocationStatus': allocationStatus,
-          'created_at': containerData['dateCreated'],
-          'is_cancelled': deliveryStatus == 'cancelled',
-        };
-        availableContainers.add(combinedData);
-        print('  ✓ ADDED container: $containerId');
-      } else {
-        print('  ✗ SKIPPED container: $containerId');
+        print('DEBUG Processing: $containerId');
+        print('  - Allocation status: "$allocationStatus"');
+        print('  - Delivery status: "$deliveryStatus"');
+        print('  - Delivery courier: "$deliveryCourier"');
+        print('  - Current user: "$currentUserId"');
+
+        // Only include containers that are RELEASED and not assigned OR have cancelled/delayed status but only if not assigned to current user
+        bool shouldInclude = false;
+        if (allocationStatus == 'released') {
+          if (!assignedContainerIds.contains(containerId)) {
+            // Container not assigned to anyone - include it
+            shouldInclude = true;
+          } else if (deliveryStatus == 'cancelled' || deliveryStatus == 'delayed') {
+            // For cancelled/delayed status, only include if NOT assigned to current user
+            // This prevents duplicates - if current user has this container, it will appear in inProgressDeliveries
+            if (deliveryCourier != currentUserId) {
+              shouldInclude = true;
+            }
+          }
+        }
+
+        print('  - Should include: $shouldInclude');
+
+        if (shouldInclude) {
+          Map<String, dynamic> combinedData = {
+            'containerId': containerId,
+            'containerNumber': containerData['containerNumber']?.toString() ?? 'N/A',
+            'sealNumber': containerData['sealNumber']?.toString() ?? 'N/A',
+            'billOfLading': containerData['billOfLading']?.toString() ?? 'N/A',
+            'consigneeName': containerData['consignedName']?.toString() ?? 'N/A',
+            'consigneeAddress': containerData['consignedAddress']?.toString() ?? 'N/A',
+            'consignorName': containerData['consignorName']?.toString() ?? 'N/A',
+            'consignorAddress': containerData['consignorAddress']?.toString() ?? 'N/A',
+            'priority': containerData['priority']?.toString() ?? 'normal',
+            'deliveredBy': containerData['deliveredBy']?.toString() ?? '',
+            'voyageId': containerData['voyageId']?.toString() ?? '',
+            'location': DECLARED_ORIGIN,
+            'destination': containerData['destination']?.toString() ?? 'Delivery Point',
+            'cargoType': containerData['cargoType']?.toString() ?? 'General',
+            'status': deliveryStatus.isNotEmpty ? deliveryStatus : 'pending',
+            'allocationStatus': allocationStatus,
+            'created_at': containerData['dateCreated'],
+            'is_cancelled': deliveryStatus == 'cancelled',
+          };
+          availableContainers.add(combinedData);
+          print('  ✓ ADDED container: $containerId');
+        } else {
+          print('  ✗ SKIPPED container: $containerId');
+        }
       }
-    }
 
-    setState(() {
-      _availableContainers = availableContainers;
-    });
-    
-    print('=== DEBUG SchedulePage: Found ${_availableContainers.length} available containers ===');
-  } catch (e) {
-    print('Error loading available containers: $e');
-    setState(() {
-      _availableContainers = [];
-    });
+      setState(() {
+        _availableContainers = availableContainers;
+      });
+      
+      print('=== DEBUG SchedulePage: Found ${_availableContainers.length} available containers ===');
+    } catch (e) {
+      print('Error loading available containers: $e');
+      setState(() {
+        _availableContainers = [];
+      });
+    }
   }
-}
 
   Future<void> _loadInProgressDeliveries() async {
     try {
@@ -271,6 +287,47 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
     } catch (e) {
       print('Error loading in-progress deliveries: $e');
     }
+  }
+
+  // Filter containers based on selected status
+  List<Map<String, dynamic>> _getFilteredAvailableContainers() {
+    if (_selectedStatusFilter == 'All') {
+      return _availableContainers;
+    }
+    
+    return _availableContainers.where((container) {
+      final containerStatus = container['status']?.toString().toLowerCase() ?? '';
+      final filterStatus = _selectedStatusFilter.toLowerCase();
+      
+      // Handle multiple status names that represent the same state
+      if (filterStatus == 'in progress' || filterStatus == 'in transit') {
+        return containerStatus == 'in progress' || 
+               containerStatus == 'in-progress' || 
+               containerStatus == 'in_transit';
+      }
+      
+      return containerStatus == filterStatus;
+    }).toList();
+  }
+
+  List<Map<String, dynamic>> _getFilteredInProgressDeliveries() {
+    if (_selectedStatusFilter == 'All') {
+      return _inProgressDeliveries;
+    }
+    
+    return _inProgressDeliveries.where((delivery) {
+      final deliveryStatus = delivery['status']?.toString().toLowerCase() ?? '';
+      final filterStatus = _selectedStatusFilter.toLowerCase();
+      
+      // Handle multiple status names that represent the same state
+      if (filterStatus == 'in progress' || filterStatus == 'in transit') {
+        return deliveryStatus == 'in progress' || 
+               deliveryStatus == 'in-progress' || 
+               deliveryStatus == 'in_transit';
+      }
+      
+      return deliveryStatus == filterStatus;
+    }).toList();
   }
 
   Future<void> _processUserData(Map<String, dynamic> data, String role) async {
@@ -414,6 +471,10 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
     final hasAvatarImage = _cachedAvatarImage != null && _cachedAvatarImage!.isNotEmpty;
     final licenseNumber = _licenseNumber.isNotEmpty ? _licenseNumber : 'Loading license...';
 
+    // Get filtered containers
+    final filteredAvailableContainers = _getFilteredAvailableContainers();
+    final filteredInProgressDeliveries = _getFilteredInProgressDeliveries();
+
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
       body: _isLoading
@@ -497,39 +558,103 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
                     ),
                   ),
 
-                  // Today's Schedule Title (moved outside header)
+                  // Today's Schedule Title and Filter - Title moved to left
                   Container(
                     width: double.infinity,
                     padding: const EdgeInsets.fromLTRB(16, 20, 16, 16),
-                    child: const Text(
-                      "Today's Schedule",
-                      style: TextStyle(
-                        fontSize: 20, 
-                        fontWeight: FontWeight.w700, 
-                        color: Color(0xFF1E293B)
-                      ),
-                      textAlign: TextAlign.center,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start, // Align to left
+                      children: [
+                        const Text(
+                          "Today's Schedule",
+                          style: TextStyle(
+                            fontSize: 20, 
+                            fontWeight: FontWeight.w700, 
+                            color: Color(0xFF1E293B)
+                          ),
+                          textAlign: TextAlign.left, // Align text to left
+                        ),
+                        const SizedBox(height: 16),
+                        // Status Filter Dropdown
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: const Color(0xFFE2E8F0)),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withOpacity(0.05),
+                                blurRadius: 8,
+                                offset: const Offset(0, 2),
+                              ),
+                            ],
+                          ),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.filter_list_rounded, 
+                                color: Color(0xFF64748B), size: 20),
+                              const SizedBox(width: 12),
+                              const Text(
+                                'Filter by Status:',
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w600,
+                                  color: Color(0xFF1E293B),
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: DropdownButton<String>(
+                                  value: _selectedStatusFilter,
+                                  isExpanded: true,
+                                  underline: const SizedBox(),
+                                  icon: const Icon(Icons.arrow_drop_down_rounded,
+                                    color: Color(0xFF64748B)),
+                                  style: const TextStyle(
+                                    fontSize: 14,
+                                    color: Color(0xFF1E293B),
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                  onChanged: (String? newValue) {
+                                    setState(() {
+                                      _selectedStatusFilter = newValue!;
+                                    });
+                                  },
+                                  items: _statusFilters.map<DropdownMenuItem<String>>((String value) {
+                                    return DropdownMenuItem<String>(
+                                      value: value,
+                                      child: Text(value),
+                                    );
+                                  }).toList(),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
                     ),
                   ),
 
-                  if (_availableContainers.isNotEmpty)
+                  if (filteredAvailableContainers.isNotEmpty)
                     _buildContainerSection(
                       "Available Containers",
-                      _availableContainers,
+                      filteredAvailableContainers,
                       true,
                     ),
 
                   const SizedBox(height: 16),
 
-                  if (_inProgressDeliveries.isNotEmpty)
+                  if (filteredInProgressDeliveries.isNotEmpty)
                     _buildContainerSection(
                       "Your Active Deliveries",
-                      _inProgressDeliveries,
+                      filteredInProgressDeliveries,
                       false,
                     ),
 
-                  if (_availableContainers.isEmpty && _inProgressDeliveries.isEmpty)
-                    _buildNoContainer(),
+                  if (filteredAvailableContainers.isEmpty && filteredInProgressDeliveries.isEmpty)
+                    _buildNoContainer(_selectedStatusFilter),
                   const SizedBox(height: 100),
                 ],
               ),
@@ -691,7 +816,7 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
     );
   }
 
-  Widget _buildNoContainer() {
+  Widget _buildNoContainer(String filter) {
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 16),
       padding: const EdgeInsets.all(20),
@@ -702,19 +827,23 @@ class _SchedulePageState extends State<SchedulePage> with AutoRefreshMixin {
           BoxShadow(color: Colors.black.withOpacity(0.08), blurRadius: 20, offset: const Offset(0, 4)),
         ],
       ),
-      child: const Column(
+      child: Column(
         children: [
-          Icon(Icons.local_shipping, size: 64, color: Color(0xFF64748B)),
-          SizedBox(height: 16),
+          Icon(Icons.search_off_rounded, size: 64, color: const Color(0xFF64748B)),
+          const SizedBox(height: 16),
           Text(
-            'No container items found',
-            style: TextStyle(fontSize: 16, color: Color(0xFF64748B)),
+            filter == 'All' 
+                ? 'No container items found'
+                : 'No containers with "$filter" status',
+            style: const TextStyle(fontSize: 16, color: Color(0xFF64748B)),
             textAlign: TextAlign.center,
           ),
-          SizedBox(height: 8),
+          const SizedBox(height: 8),
           Text(
-            'Container items will appear here when added to the system',
-            style: TextStyle(fontSize: 12, color: Color(0xFF94A3B8)),
+            filter == 'All'
+                ? 'Container items will appear here when added to the system'
+                : 'Try selecting a different status filter',
+            style: const TextStyle(fontSize: 12, color: Color(0xFF94A3B8)),
             textAlign: TextAlign.center,
           ),
         ],

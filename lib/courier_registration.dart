@@ -56,22 +56,25 @@ class _CourierRegistrationPageState extends State<CourierRegistrationPage> {
     try {
       final XFile? image = await _picker.pickImage(source: ImageSource.gallery);
       if (image != null) {
-        setState(() {
-          if (isProfile) {
-            _profileImage = image;
-          } else {
-            _licenseImage = image;
-          }
-        });
-        
-        // Convert image to base64
+        // Convert image to base64 first
         final Uint8List bytes = await image.readAsBytes();
         final String base64String = base64Encode(bytes);
         
-        if (isProfile) {
-          _profileImageBase64 = base64String;
+        // Check if base64 encoding was successful
+        if (base64String.isNotEmpty) {
+          setState(() {
+            if (isProfile) {
+              _profileImage = image;
+              _profileImageBase64 = base64String;
+            } else {
+              _licenseImage = image;
+              _licenseImageBase64 = base64String;
+            }
+          });
         } else {
-          _licenseImageBase64 = base64String;
+          setState(() {
+            _errorMessage = 'Failed to process image';
+          });
         }
       }
     } catch (e) {
@@ -192,6 +195,21 @@ class _CourierRegistrationPageState extends State<CourierRegistrationPage> {
       return;
     }
     
+    // Validate base64 images
+    if (_licenseImageBase64 == null || _licenseImageBase64!.isEmpty) {
+      setState(() {
+        _errorMessage = 'License image is required';
+      });
+      return;
+    }
+
+    if (_profileImageBase64 == null || _profileImageBase64!.isEmpty) {
+      setState(() {
+        _errorMessage = 'Profile image is required';
+      });
+      return;
+    }
+    
     setState(() {
       _isLoading = true;
       _errorMessage = '';
@@ -204,27 +222,39 @@ class _CourierRegistrationPageState extends State<CourierRegistrationPage> {
         password: _passwordController.text,
       );
       
-      // Ensure base64 images are properly encoded
-      if (_licenseImageBase64 == null || _profileImageBase64 == null) {
+      // Ensure base64 images are properly encoded (fallback)
+      if (_licenseImageBase64 == null || _licenseImageBase64!.isEmpty) {
         final licenseBytes = await _licenseImage!.readAsBytes();
-        final profileBytes = await _profileImage!.readAsBytes();
         _licenseImageBase64 = base64Encode(licenseBytes);
+      }
+      
+      if (_profileImageBase64 == null || _profileImageBase64!.isEmpty) {
+        final profileBytes = await _profileImage!.readAsBytes();
         _profileImageBase64 = base64Encode(profileBytes);
       }
 
-      // Save user data to Firestore
-      await _firestore.collection('Couriers').doc(userCredential.user!.uid).set({
+      // Save user data to Firestore with proper null handling
+      Map<String, dynamic> userData = {
         'first_name': _firstNameController.text.trim(),
         'last_name': _lastNameController.text.trim(),
         'email': _emailController.text.trim(),
         'phone': _phoneController.text.trim(),
         'license_number': _licenseController.text.trim(),
-        'license_image_base64': _licenseImageBase64,
-        'profile_image_base64': _profileImageBase64,
         'created_at': FieldValue.serverTimestamp(),
         'status': 'pending',
         'role': 'courier',
-      });
+      };
+
+      // Only add images if they're not null and not empty
+      if (_licenseImageBase64 != null && _licenseImageBase64!.isNotEmpty) {
+        userData['license_image_base64'] = _licenseImageBase64;
+      }
+      
+      if (_profileImageBase64 != null && _profileImageBase64!.isNotEmpty) {
+        userData['profile_image_base64'] = _profileImageBase64;
+      }
+
+      await _firestore.collection('Couriers').doc(userCredential.user!.uid).set(userData);
       
       // Send email verification
       if (!userCredential.user!.emailVerified) {

@@ -958,7 +958,7 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
                                   ),
                                   SizedBox(width: 12),
                                   Text(
-                                    "Sign In",
+                                    "LOGIN",
                                     style: TextStyle(
                                       fontSize: 16,
                                       fontWeight: FontWeight.bold,
