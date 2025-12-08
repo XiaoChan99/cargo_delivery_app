@@ -174,7 +174,7 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
                     );
                   },
                   child: const Text(
-                    "Go to Dashboard",
+                    "Start Delivery",
                     style: TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.w600,
