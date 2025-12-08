@@ -1,16 +1,8 @@
-// Updated OSMService with wider Cebu bounds, corrected Oslob handling,
-// improved logging and small robustness fixes.
-//
-// Changes made:
-// - Expanded _cebuLatMin/_cebuLatMax/_cebuLngMin/_cebuLngMax so southern towns
-//   like Oslob are included (previous bounds excluded them).
-// - Corrected/added a few municipality name variants and adjusted Oslob coords.
-// - Added more debug printing to make geocoding/routing decisions visible.
-// - Allow Nominatim primary geocode result to be accepted even if it falls
-//   slightly outside Cebu bounds when no better Cebu-specific match exists.
-// - Minor defensive checks and clearer comments.
+// Updated OSMService with mobile compatibility fixes, wider Cebu bounds,
+// corrected Oslob handling, improved logging and robust HTTP requests.
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'dart:developer' as developer;
 import 'package:latlong2/latlong.dart';
 
 class OSMService {
@@ -87,44 +79,67 @@ class OSMService {
     'bulacao': LatLng(10.3333, 123.9333),
   };
 
+  // Enhanced HTTP request with proper headers for mobile
+  static Future<http.Response> _makeHttpRequest(Uri uri, {Duration? timeout}) async {
+    final headers = {
+      'User-Agent': 'CargoDeliveryApp/1.0 (com.example.cargo_delivery_app)',
+      'Accept': 'application/json',
+      'Accept-Language': 'en-US,en;q=0.9',
+    };
+    
+    developer.log('HTTP Request: $uri', name: 'OSMService');
+    
+    try {
+      final response = await http.get(uri, headers: headers).timeout(
+        timeout ?? const Duration(seconds: 25), // Increased timeout for mobile
+      );
+      
+      developer.log('HTTP Response: ${response.statusCode}', name: 'OSMService');
+      return response;
+    } catch (e) {
+      developer.log('HTTP Request Error: $e', error: e, name: 'OSMService');
+      rethrow;
+    }
+  }
+
   // Enhanced Geocoding - Convert address to coordinates with Cebu fallback support
   static Future<Map<String, double>?> geocodeAddress(String address) async {
     try {
       if (address.isEmpty) {
-        print('ERROR: Address is empty');
+        developer.log('ERROR: Address is empty', name: 'OSMService');
         return null;
       }
 
       final normalized = address.trim();
-      print('DEBUG: Geocoding address: "$normalized"');
+      developer.log('Geocoding address: "$normalized"', name: 'OSMService');
 
       // Strategy 1: Try direct Nominatim first (accept near-Cebu results too)
       var result = await _geocodeWithNominatim(normalized);
       if (result != null) {
-        print('DEBUG: Successfully geocoded via Nominatim: $result');
+        developer.log('Successfully geocoded via Nominatim: $result', name: 'OSMService');
         return result;
       }
 
       // Strategy 2: Try with enhanced parsing and Cebu fallback
       result = await _geocodeWithCebuFallback(normalized);
       if (result != null) {
-        print('DEBUG: Successfully geocoded via Cebu fallback: $result');
+        developer.log('Successfully geocoded via Cebu fallback: $result', name: 'OSMService');
         return result;
       }
 
       // Strategy 3: If still null, try a secondary Nominatim attempt adding Cebu context
       final secAddress = normalized.contains('cebu') ? normalized : '$normalized, Cebu, Philippines';
-      print('DEBUG: final attempt geocoding with context: "$secAddress"');
+      developer.log('Final attempt geocoding with context: "$secAddress"', name: 'OSMService');
       result = await _geocodeWithNominatim(secAddress);
       if (result != null) {
-        print('DEBUG: geocoded with context: $result');
+        developer.log('Geocoded with context: $result', name: 'OSMService');
         return result;
       }
 
-      print('ERROR: Could not geocode address: $address');
+      developer.log('ERROR: Could not geocode address: $address', name: 'OSMService');
       return null;
     } catch (e) {
-      print('Exception in geocodeAddress: $e');
+      developer.log('Exception in geocodeAddress: $e', error: e, name: 'OSMService');
       return null;
     }
   }
@@ -135,10 +150,13 @@ class OSMService {
       final uri = Uri.parse(
         'https://nominatim.openstreetmap.org/search?format=json&q=${Uri.encodeQueryComponent(address)}&limit=1&addressdetails=1&countrycodes=ph'
       );
-      final response = await http.get(uri).timeout(const Duration(seconds: 10));
+      
+      final response = await _makeHttpRequest(uri);
 
       if (response.statusCode == 200) {
         final List<dynamic> data = json.decode(response.body);
+        developer.log('Nominatim found ${data.length} results for "$address"', name: 'OSMService');
+        
         if (data.isNotEmpty) {
           final lat = double.parse(data[0]['lat'].toString());
           final lng = double.parse(data[0]['lon'].toString());
@@ -149,15 +167,16 @@ class OSMService {
           }
 
           // If not in Cebu region, still accept the result if the address is not explicitly Cebu-only.
-          // Log it so callers can see what happened.
-          print('DEBUG: Nominatim returned coords outside Cebu bounds: ($lat, $lng) for address "$address"');
+          developer.log('Nominatim returned coords outside Cebu bounds: ($lat, $lng) for address "$address"', name: 'OSMService');
           return {'lat': lat, 'lng': lng};
+        } else {
+          developer.log('No Nominatim results for address: "$address"', name: 'OSMService');
         }
       } else {
-        print('Nominatim returned status ${response.statusCode} for address "$address"');
+        developer.log('Nominatim returned status ${response.statusCode} for address "$address"', name: 'OSMService');
       }
     } catch (e) {
-      print('Nominatim error: $e');
+      developer.log('Nominatim error: $e', error: e, name: 'OSMService');
     }
     return null;
   }
@@ -173,7 +192,7 @@ class OSMService {
       // Check exact municipality matches
       for (var entry in _cebuMunicipalities.entries) {
         if (normalized.contains(entry.key)) {
-          print('DEBUG: Matched municipality: ${entry.key}');
+          developer.log('Matched municipality: ${entry.key}', name: 'OSMService');
           return {
             'lat': entry.value.latitude,
             'lng': entry.value.longitude,
@@ -184,7 +203,7 @@ class OSMService {
       // Check barangay matches
       for (var entry in _cebuBarangays.entries) {
         if (normalized.contains(entry.key)) {
-          print('DEBUG: Matched barangay: ${entry.key}');
+          developer.log('Matched barangay: ${entry.key}', name: 'OSMService');
           return {
             'lat': entry.value.latitude,
             'lng': entry.value.longitude,
@@ -195,14 +214,14 @@ class OSMService {
       // Fuzzy matching for partial strings (best-effort)
       var fuzzyResult = _fuzzyMatchLocation(normalized);
       if (fuzzyResult != null) {
-        print('DEBUG: Matched via fuzzy: $fuzzyResult');
+        developer.log('Matched via fuzzy: $fuzzyResult', name: 'OSMService');
         return fuzzyResult;
       }
 
       // If address doesn't mention Cebu explicitly, try Nominatim with Cebu added (handled by caller)
       return null;
     } catch (e) {
-      print('Cebu fallback geocoding error: $e');
+      developer.log('Cebu fallback geocoding error: $e', error: e, name: 'OSMService');
       return null;
     }
   }
@@ -255,9 +274,11 @@ class OSMService {
   // Enhanced geocoding with country detection
   static Future<Map<String, dynamic>> geocodeAddressWithDetails(String address) async {
     try {
-      final response = await http.get(
-        Uri.parse('https://nominatim.openstreetmap.org/search?format=json&q=${Uri.encodeQueryComponent(address)}&limit=1&addressdetails=1')
-      ).timeout(const Duration(seconds: 10));
+      final uri = Uri.parse(
+        'https://nominatim.openstreetmap.org/search?format=json&q=${Uri.encodeQueryComponent(address)}&limit=1&addressdetails=1'
+      );
+      
+      final response = await _makeHttpRequest(uri);
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
@@ -272,13 +293,15 @@ class OSMService {
             'country': country,
             'display_name': result['display_name'],
           };
+        } else {
+          developer.log('No results in geocodeAddressWithDetails for: $address', name: 'OSMService');
         }
       } else {
-        print('geocodeAddressWithDetails: Nominatim returned ${response.statusCode}');
+        developer.log('geocodeAddressWithDetails: Nominatim returned ${response.statusCode}', name: 'OSMService');
       }
       return {'error': 'Address not found'};
     } catch (e) {
-      print('Enhanced geocoding error for $address: $e');
+      developer.log('Enhanced geocoding error for $address: $e', error: e, name: 'OSMService');
       return {'error': e.toString()};
     }
   }
@@ -290,26 +313,35 @@ class OSMService {
     String profile = 'driving',
   }) async {
     try {
+      developer.log('Getting route from $start to $end', name: 'OSMService');
+      
       final url = Uri.parse(
         'https://router.project-osrm.org/route/v1/$profile/'
           '${start.longitude},${start.latitude};'
           '${end.longitude},${end.latitude}?overview=full&geometries=geojson&steps=true&annotations=true'
       );
 
-      print('DEBUG: Requesting route from OSRM: $url');
-      final response = await http.get(url).timeout(const Duration(seconds: 15));
+      final response = await _makeHttpRequest(url);
 
+      developer.log('OSRM response status: ${response.statusCode}', name: 'OSMService');
+      
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
+        developer.log('OSRM data received: ${data['code']}', name: 'OSMService');
+        
         if (data['code'] == 'Ok' && data['routes'] != null && data['routes'].isNotEmpty) {
           final route = data['routes'][0];
           final distanceKm = (route['distance'] as num) / 1000.0;
           final durationMinutes = (route['duration'] as num) / 60.0;
 
+          developer.log('Route found: ${distanceKm.toStringAsFixed(1)} km, ${durationMinutes.toStringAsFixed(0)} min', name: 'OSMService');
+          
           // Extract geometry coordinates with endpoint correction
           List<LatLng> routePoints = [];
           if (route['geometry'] != null && route['geometry']['coordinates'] != null) {
             final coordinates = route['geometry']['coordinates'] as List;
+            developer.log('Route has ${coordinates.length} coordinate points', name: 'OSMService');
+            
             for (var coord in coordinates) {
               if (coord is List && coord.length >= 2) {
                 // OSRM returns [lng, lat]
@@ -323,25 +355,32 @@ class OSMService {
             if (routePoints.isNotEmpty) {
               final lastPoint = routePoints.last;
               final distanceToEndMeters = _distanceCalculator(lastPoint, end); // meters
-              print('DEBUG: distance from last route point to end = ${distanceToEndMeters.toStringAsFixed(1)} meters');
+              developer.log('Distance from last route point to end = ${distanceToEndMeters.toStringAsFixed(1)} meters', name: 'OSMService');
+              
               if (distanceToEndMeters > 100.0) {
                 // last point far from end, append exact end
                 routePoints.add(end);
+                developer.log('Appended destination point to route', name: 'OSMService');
               } else {
                 // snap last point to exact end coordinates
                 routePoints[routePoints.length - 1] = end;
+                developer.log('Snapped last point to destination', name: 'OSMService');
               }
             } else {
               routePoints = [start, end];
+              developer.log('No geometry points, using fallback start-end route', name: 'OSMService');
             }
           } else {
             // geometry missing -> fallback to simple two-point route
             routePoints = [start, end];
+            developer.log('Missing geometry, using fallback start-end route', name: 'OSMService');
           }
 
           final double distanceThreshold = 500.0; // kilometers for "international" heuristic
           final bool isInternational = distanceKm > distanceThreshold;
           String trafficStatus = _getTrafficStatus(durationMinutes, distanceKm);
+
+          developer.log('Route processing complete. Points: ${routePoints.length}, International: $isInternational', name: 'OSMService');
 
           return {
             'distance': distanceKm.toStringAsFixed(1),
@@ -356,15 +395,15 @@ class OSMService {
             'routeAccuracy': 'high',
           };
         } else {
-          print('DEBUG: OSRM returned no routes or not Ok: ${data['code']}');
+          developer.log('DEBUG: OSRM returned no routes or not Ok: ${data['code']}', name: 'OSMService');
         }
       } else {
-        print('DEBUG: OSRM responded with status ${response.statusCode}');
+        developer.log('DEBUG: OSRM responded with status ${response.statusCode}', name: 'OSMService');
       }
 
       return _getFallbackRouteInfo(start, end);
     } catch (e) {
-      print('Routing error: $e');
+      developer.log('Routing error: $e', error: e, name: 'OSMService');
       return _getFallbackRouteInfo(start, end);
     }
   }
@@ -376,14 +415,16 @@ class OSMService {
     String profile = 'driving',
   }) async {
     try {
-      final response = await http.get(
-        Uri.parse('https://graphhopper.com/api/1/route?'
-          'point=${start.latitude},${start.longitude}'
-          '&point=${end.latitude},${end.longitude}'
-          '&vehicle=$profile'
-          '&key=2f91b148-9935-442e-be56-f02014d082ae'
-          '&type=json&instructions=true&points_encoded=false')
-      ).timeout(const Duration(seconds: 15));
+      developer.log('Trying alternative route via GraphHopper', name: 'OSMService');
+      
+      final uri = Uri.parse('https://graphhopper.com/api/1/route?'
+        'point=${start.latitude},${start.longitude}'
+        '&point=${end.latitude},${end.longitude}'
+        '&vehicle=$profile'
+        '&key=2f91b148-9935-442e-be56-f02014d082ae'
+        '&type=json&instructions=true&points_encoded=false');
+      
+      final response = await _makeHttpRequest(uri);
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
@@ -392,9 +433,13 @@ class OSMService {
           final distanceKm = (path['distance'] as num) / 1000.0;
           final durationMinutes = (path['time'] as num) / 60000.0;
 
+          developer.log('GraphHopper route found: ${distanceKm.toStringAsFixed(1)} km', name: 'OSMService');
+
           List<LatLng> routePoints = [];
           if (path['points'] != null && path['points']['coordinates'] != null) {
             final coordinates = path['points']['coordinates'] as List;
+            developer.log('GraphHopper route has ${coordinates.length} points', name: 'OSMService');
+            
             for (var coord in coordinates) {
               if (coord is List && coord.length >= 2) {
                 // GraphHopper points usually [lng, lat] or [lat, lng] depending on output;
@@ -421,14 +466,17 @@ class OSMService {
             'routeFound': true,
             'routeAccuracy': 'high',
           };
+        } else {
+          developer.log('GraphHopper returned no paths', name: 'OSMService');
         }
       } else {
-        print('GraphHopper returned status ${response.statusCode}');
+        developer.log('GraphHopper returned status ${response.statusCode}', name: 'OSMService');
       }
     } catch (e) {
-      print('Alternative routing error: $e');
+      developer.log('Alternative routing error: $e', error: e, name: 'OSMService');
     }
 
+    developer.log('Falling back to OSRM for route', name: 'OSMService');
     return getRouteWithGeometry(start, end, profile: profile);
   }
 
@@ -436,9 +484,11 @@ class OSMService {
   static Future<bool> isInternationalRoute(LatLng point1, LatLng point2) async {
     try {
       final double distance = _calculateDistance(point1, point2);
-      return distance > 500.0;
+      final isInternational = distance > 500.0;
+      developer.log('International route check: $distance km -> $isInternational', name: 'OSMService');
+      return isInternational;
     } catch (e) {
-      print('International route check error: $e');
+      developer.log('International route check error: $e', error: e, name: 'OSMService');
       return false;
     }
   }
@@ -460,12 +510,14 @@ class OSMService {
   }
 
   static Map<String, dynamic> _getFallbackRouteInfo(LatLng start, LatLng end) {
+    developer.log('Using fallback route calculation', name: 'OSMService');
+    
     List<LatLng> fallbackPoints = [start, end];
     final double distance = _calculateDistance(start, end);
     final bool isInternational = distance > 500.0;
     final double estimatedDuration = (distance / 50.0) * 60.0; // assume 50 km/h avg
 
-    print('DEBUG: fallback route used start=$start end=$end distance=${distance.toStringAsFixed(2)} km');
+    developer.log('Fallback route: start=$start end=$end distance=${distance.toStringAsFixed(2)} km', name: 'OSMService');
 
     return {
       'distance': distance.toStringAsFixed(1),
@@ -487,9 +539,33 @@ class OSMService {
 
     if ((lat - 0.0).abs() < 0.000001 && (lng - 0.0).abs() < 0.000001) {
       // suspicious zero coordinates -> return reference
+      developer.log('Suspicious zero coordinates detected, using reference point', name: 'OSMService');
       return reference;
     }
 
     return LatLng(lat, lng);
+  }
+
+  // Test connectivity to OSM services
+  static Future<bool> testConnectivity() async {
+    try {
+      developer.log('Testing OSM service connectivity', name: 'OSMService');
+      
+      // Test Nominatim
+      final nominatimUri = Uri.parse('https://nominatim.openstreetmap.org/search?format=json&q=Cebu&limit=1');
+      final nominatimResponse = await _makeHttpRequest(nominatimUri, timeout: Duration(seconds: 10));
+      
+      // Test OSRM
+      final osrmUri = Uri.parse('https://router.project-osrm.org/route/v1/driving/123.8854,10.3157;123.8854,10.3157?overview=false');
+      final osrmResponse = await _makeHttpRequest(osrmUri, timeout: Duration(seconds: 10));
+      
+      final isConnected = nominatimResponse.statusCode == 200 || osrmResponse.statusCode == 200;
+      developer.log('OSM Connectivity test: $isConnected', name: 'OSMService');
+      
+      return isConnected;
+    } catch (e) {
+      developer.log('Connectivity test failed: $e', error: e, name: 'OSMService');
+      return false;
+    }
   }
 }

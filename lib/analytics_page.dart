@@ -786,7 +786,7 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
               Icon(Icons.calendar_today, color: Color(0xFF3B82F6), size: 20),
               SizedBox(width: 8),
               Text(
-                'Monthly Cargo Distribution',
+                'Monthly Containers Distribution',
                 style: TextStyle(
                   fontSize: 18,
                   fontWeight: FontWeight.w700,

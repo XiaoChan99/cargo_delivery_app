@@ -33,6 +33,28 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
     return query.docs.isNotEmpty;
   }
 
+  Future<Map<String, String>> _fetchUserData(String email) async {
+    try {
+      final query = await _firestore
+          .collection('Couriers')
+          .where('email', isEqualTo: email)
+          .limit(1)
+          .get();
+
+      if (query.docs.isNotEmpty) {
+        final userData = query.docs.first.data();
+        return {
+          'firstName': userData['first_name']?.toString() ?? '',
+          'lastName': userData['last_name']?.toString() ?? '',
+        };
+      }
+      return {'firstName': '', 'lastName': ''};
+    } catch (e) {
+      print('Error fetching user data: $e');
+      return {'firstName': '', 'lastName': ''};
+    }
+  }
+
   void _showNotification(String message, bool isSuccess) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -66,96 +88,101 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
     );
   }
 
-  void _showSuccessModal() {
+  void _showSuccessPopup(String firstName, String lastName) {
+    String welcomeName = '';
+    
+    if (firstName.isNotEmpty && lastName.isNotEmpty) {
+      welcomeName = '$firstName $lastName';
+    } else if (firstName.isNotEmpty) {
+      welcomeName = firstName;
+    } else if (lastName.isNotEmpty) {
+      welcomeName = lastName;
+    } else {
+      welcomeName = 'Courier';
+    }
+
     showDialog(
       context: context,
       barrierDismissible: false,
-      barrierColor: Colors.black54,
-      builder: (context) => PopScope(
-        canPop: false,
-        child: Dialog(
-          backgroundColor: Colors.transparent,
-          elevation: 0,
-          child: Container(
-            padding: const EdgeInsets.all(40),
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [_primaryColor, _accentColor],
+      builder: (context) => Dialog(
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(20),
+        ),
+        backgroundColor: Colors.white,
+        surfaceTintColor: Colors.white,
+        child: Container(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Success icon
+              Container(
+                width: 80,
+                height: 80,
+                decoration: BoxDecoration(
+                  color: _successColor.withOpacity(0.1),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  Icons.check_circle_rounded,
+                  size: 48,
+                  color: _successColor,
+                ),
               ),
-              borderRadius: BorderRadius.circular(30),
-              boxShadow: [
-                BoxShadow(
-                  color: _primaryColor.withOpacity(0.3),
-                  blurRadius: 40,
-                  offset: const Offset(0, 20),
+              const SizedBox(height: 20),
+              
+              // Title
+              const Text(
+                "Login Successful!",
+                style: TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFF1E293B),
                 ),
-              ],
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  width: 100,
-                  height: 100,
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.2),
-                    shape: BoxShape.circle,
-                  ),
-                  child: const Icon(
-                    Icons.local_shipping_rounded,
-                    size: 60,
-                    color: Colors.white,
-                  ),
+              ),
+              const SizedBox(height: 8),
+              
+              // Message with user's name
+              Text(
+                "Welcome back, $welcomeName!",
+                style: const TextStyle(
+                  fontSize: 14,
+                  color: Color(0xFF64748B),
                 ),
-                const SizedBox(height: 24),
-                const Text(
-                  "Login Successful!",
-                  style: TextStyle(
-                    fontSize: 28,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.white,
-                    letterSpacing: 0.5,
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 24),
+              
+              // OK Button
+              SizedBox(
+                width: double.infinity,
+                height: 48,
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: _successColor,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    elevation: 0,
                   ),
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 12),
-                const Text(
-                  "Welcome back to Container Delivery",
-                  style: TextStyle(
-                    fontSize: 16,
-                    color: Colors.white70,
-                    fontWeight: FontWeight.w500,
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 24),
-                Container(
-                  width: 60,
-                  height: 60,
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.2),
-                    shape: BoxShape.circle,
-                  ),
-                  child: const Icon(
-                    Icons.check_rounded,
-                    size: 40,
-                    color: _successColor,
+                  onPressed: () {
+                    Navigator.pop(context); // Close popup
+                    Navigator.pushReplacement(
+                      context,
+                      MaterialPageRoute(builder: (context) => const HomePage()),
+                    );
+                  },
+                  child: const Text(
+                    "Go to Dashboard",
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ),
-                const SizedBox(height: 24),
-                const SizedBox(
-                  width: 50,
-                  height: 4,
-                  child: LinearProgressIndicator(
-                    backgroundColor: Colors.white30,
-                    valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                    minHeight: 4,
-                  ),
-                ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
       ),
@@ -589,29 +616,24 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
           return;
         }
 
-        // Show success modal
-        _showSuccessModal();
+        // Fetch user data to get first and last name
+        final userData = await _fetchUserData(email);
+        final String firstName = userData['firstName'] ?? '';
+        final String lastName = userData['lastName'] ?? '';
 
-        // Pre-load the HomePage while modal is showing
-        final homePage = HomePage();
-        await precacheImage(
-          NetworkImage('https://example.com/image.png'), // Replace with actual image if any
-          context,
-        ).catchError((_) => null); // Ignore errors if no images to cache
+        // Reset loading state first
+        setState(() {
+          _isLoading = false;
+        });
 
-        // Wait 3 seconds for modal display
-        await Future.delayed(const Duration(seconds: 3));
-
-        if (mounted) {
-          // Dismiss modal and navigate
-          Navigator.of(context).pop(); // Close modal
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(builder: (context) => homePage),
-          );
-        }
+        // Show success popup with user's name
+        _showSuccessPopup(firstName, lastName);
 
       } on FirebaseAuthException catch (e) {
+        setState(() {
+          _isLoading = false;
+        });
+        
         if (e.code == 'wrong-password' || e.code == 'too-many-requests') {
           _handlePasswordError(e.code);
         } else if (e.code == 'invalid-email') {
@@ -631,14 +653,11 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
         }
         print('Email login Firebase error: ${e.code} - ${e.message}');
       } catch (e) {
+        setState(() {
+          _isLoading = false;
+        });
         _showNotification("An unexpected error occurred. Please try again.", false);
         print('Email login error: $e');
-      } finally {
-        if (mounted) {
-          setState(() {
-            _isLoading = false;
-          });
-        }
       }
     }
   }
@@ -940,31 +959,20 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
                         ),
                         onPressed: _isLoading ? null : _handleLogin,
                         child: _isLoading
-                            ? const SizedBox(
-                                height: 20,
-                                width: 20,
+                            ? SizedBox(
+                                height: 24,
+                                width: 24,
                                 child: CircularProgressIndicator(
                                   strokeWidth: 2,
                                   valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
                                 ),
                               )
-                            : const Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Icon(
-                                    Icons.login_rounded,
-                                    size: 20,
-                                    color: Colors.white,
-                                  ),
-                                  SizedBox(width: 12),
-                                  Text(
-                                    "LOGIN",
-                                    style: TextStyle(
-                                      fontSize: 16,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                ],
+                            : const Text(
+                                "LOGIN",
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                ),
                               ),
                       ),
                     ),

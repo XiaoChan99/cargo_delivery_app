@@ -161,13 +161,13 @@ class _LiveMapPageState extends State<LiveMapPage> {
           deliveredByName = await _getCourierName(containerData['deliveredBy']);
         }
         
-        // Get coordinates for the DESTINATION of all containers (fallback to Containers.consigneeAddress)
-        final destCoords = await _getCoordinatesForAddress(containerData['consigneeAddress'] ?? 'Cebu City');
+        // Get coordinates for the DESTINATION of all containers (use only destination field)
+        final destCoords = await _getCoordinatesForAddress(containerData['destination'] ?? 'Cebu City');
         
         Map<String, dynamic> container = {
           'containerId': containerId,
           'containerNo': containerData['containerNumber'] ?? 'N/A',
-          'destination': containerData['consigneeAddress'] ?? 'Unknown',
+          'destination': containerData['destination'] ?? 'Unknown',
           'origin': DECLARED_ORIGIN, // Always use declared origin
           'description': containerData['cargoType'] ?? 'N/A',
           'weight': 0.0, // Not available in Containers collection
@@ -225,7 +225,7 @@ class _LiveMapPageState extends State<LiveMapPage> {
           'delivery_id': doc.id,
           'containerId': containerId,
           'containerNo': containerData['containerNumber'] ?? 'N/A',
-          'destination': containerData['consigneeAddress'] ?? 'Unknown',
+          'destination': containerData['destination'] ?? 'Unknown',
           'origin': DECLARED_ORIGIN,
           'status': status,
           'description': containerData['cargoType'] ?? 'N/A',
@@ -279,9 +279,9 @@ class _LiveMapPageState extends State<LiveMapPage> {
         if (destFromDelivery != null) {
           destCoords = OSMService.validateAndCorrectCoordinates(destFromDelivery, const LatLng(10.3157, 123.8854));
         } else {
-          // fallback to container consigneeAddress or geocoded
+          // use only destination field
           destCoords = OSMService.validateAndCorrectCoordinates(
-            await _getCoordinatesForAddress(delivery['destination'] ?? containerData['consigneeAddress'] ?? 'Cebu City'),
+            await _getCoordinatesForAddress(delivery['destination'] ?? 'Cebu City'),
             const LatLng(10.3157, 123.8854),
           );
         }
@@ -975,7 +975,7 @@ class _LiveMapPageState extends State<LiveMapPage> {
               icon: Icons.route,
               children: [
                 _buildDetailRow(Icons.location_on, "Origin", DECLARED_ORIGIN),
-                _buildDetailRow(Icons.flag, "Destination", container['consigneeAddress'] ?? 'N/A'),
+                _buildDetailRow(Icons.flag, "Destination", container['destination'] ?? 'N/A'),
                 if (isAccepted && routeData.distance != '0') ...[
                   _buildDetailRow(Icons.space_dashboard, "Distance", "${routeData.distance} km"),
                   _buildDetailRow(Icons.access_time, "Estimated Time", "${routeData.duration} min"),
@@ -1008,7 +1008,7 @@ class _LiveMapPageState extends State<LiveMapPage> {
                 _buildDetailRow(
                   Icons.location_on, 
                   "Container Location", 
-                  "At destination: ${container['consigneeAddress'] ?? 'N/A'}",
+                  "At destination: ${container['destination'] ?? 'N/A'}",
                 ),
                 _buildDetailRow(
                   Icons.note, 
